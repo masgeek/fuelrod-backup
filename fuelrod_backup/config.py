@@ -105,7 +105,7 @@ def _find_config_file() -> Path | None:
         search_dirs.append(repo_root)
 
     for directory in search_dirs:
-        for name in (".backup", ".env-backup"):
+        for name in (".backup", ".env", ".env-backup"):
             candidate = directory / name
             if candidate.is_file():
                 return candidate

@@ -1,17 +1,15 @@
 # fuelrod-backup
 
-**Interactive PostgreSQL backup and restore CLI — Docker-aware, wizard-driven.**
+Interactive backup and restore CLI for PostgreSQL, MariaDB/MySQL, and Microsoft SQL Server.
 
-`fuelrod-backup` replaces fragile bash backup scripts with a Python CLI that gives you:
+## Features
 
-- Type-safe configuration loaded from a `.backup` or `.env` file
-- Rich interactive wizards (database picker, schema filter, role analysis)
-- Docker-aware subprocess handling — no binary pipe corruption, no env-var leakage
-- Non-interactive mode for cron / CI (`--no-interactive`)
-- `pg_dump` custom-format backups with optional gzip compression
-- Automatic rotation of old backups
-
----
+- Supports `postgres`, `mariadb`, and `mssql` engines
+- Interactive backup and restore wizards
+- Non-interactive backup mode for automation
+- Docker and direct-host connection modes
+- Config bootstrap wizard (`init`) and connection check (`test`)
+- Backup retention cleanup (`KEEP_DAYS`)
 
 ## Installation
 
@@ -19,184 +17,121 @@
 pip install fuelrod-backup
 ```
 
-Or with [pipx](https://pypa.github.io/pipx/) (recommended for CLI tools):
+Or with `pipx`:
 
 ```bash
 pipx install fuelrod-backup
 ```
 
-Or inside a Poetry project:
+## Quick Start
+
+1. Initialize config:
 
 ```bash
-poetry add fuelrod-backup
+fuelrod-backup init
 ```
 
----
-
-## Quick start
-
-### 1. Create a config file
-
-`fuelrod-backup` auto-discovers config in this order:
-
-| Priority | File | Location searched |
-|----------|------|-------------------|
-| 1st | `.backup` | project dir, then repo root |
-| 2nd | `.env` | project dir, then repo root |
-
-You can also pass an explicit path with `--config /path/to/file`.
-
-**`.backup`** (shell-style, used by the legacy bash scripts):
+2. Validate connection:
 
 ```bash
-# .backup
-PG_USERNAME=postgres
-PG_PASSWORD=secret
-PG_HOST=127.0.0.1
-PG_PORT=5432
-SERVICE=postgres        # Docker container name
-USE_DOCKER=true
-BASE_DIR=/var/backups/postgres
-COMPRESS_FILE=false
-KEEP_DAYS=7
+fuelrod-backup test
 ```
 
-**`.env`** (Docker Compose style — same key=value format, also supported):
-
-```dotenv
-# .env
-PG_USERNAME=postgres
-PG_PASSWORD=secret
-PG_HOST=127.0.0.1
-PG_PORT=5432
-SERVICE=postgres
-USE_DOCKER=true
-BASE_DIR=/var/backups/postgres
-COMPRESS_FILE=false
-KEEP_DAYS=7
-```
-
-Both formats support:
-- `# comments`
-- `export KEY=value` (the `export` keyword is stripped)
-- Single- and double-quoted values
-
-> **Priority:** environment variables always override file values.
-
-### 2. Run the interactive backup wizard
+3. Run backup:
 
 ```bash
 fuelrod-backup backup
 ```
 
-### 3. Run the interactive restore wizard
+4. Run restore:
 
 ```bash
 fuelrod-backup restore
 ```
 
-### 4. Non-interactive backup (cron / CI)
+## CLI Commands
 
-```bash
-fuelrod-backup backup --no-interactive
+```text
+fuelrod-backup backup [OPTIONS]
+fuelrod-backup restore [OPTIONS]
+fuelrod-backup test [OPTIONS]
+fuelrod-backup init [OPTIONS]
 ```
 
----
+### `backup` options
 
-## Commands
+- `--no-interactive, -n` skip prompts and back up all databases
+- `--compress / --no-compress` override compression
+- `--keep-days, -k` override retention days (`0` keeps forever)
+- `--db, -d` repeatable database selector
+- `--docker / --no-docker` override `USE_DOCKER`
+- `--db-type, -t` one of `postgres | mariadb | mssql`
+- `--config, -c` explicit config file path
 
-### `fuelrod-backup backup`
+### `restore` and `test` options
 
-```
-Usage: fuelrod-backup backup [OPTIONS]
+- `--docker / --no-docker`
+- `--db-type, -t`
+- `--config, -c`
 
-  Back up one or more PostgreSQL databases.
+### `init` options
 
-Options:
-  --no-interactive          Skip all wizard prompts; back up all databases.
-  --compress / --no-compress
-                            Compress output with gzip.
-  --keep-days INTEGER       Delete backups older than N days (0 = keep forever).
-  --db TEXT                 Database(s) to back up (repeatable). Default: all.
-  --schemas TEXT            Comma-separated schemas to include (applied to every DB).
-  --config PATH             Path to .backup or .env config file.
-  --help                    Show this message and exit.
-```
+- `--output, -o` output path for generated config (default `.backup`)
 
-### `fuelrod-backup restore`
+## Config
 
-```
-Usage: fuelrod-backup restore [OPTIONS]
+Config is loaded in this order:
 
-  Interactively restore a PostgreSQL database from a dump file.
+1. defaults in code
+2. config file (`--config` if passed, otherwise auto-discovered)
+3. environment variables (highest priority)
 
-Options:
-  --config PATH   Path to .backup or .env config file.
-  --help          Show this message and exit.
-```
+### Auto-discovery order
 
----
+For each directory below, files are checked in this order:
 
-## Restore wizard steps
+1. `.backup`
+2. `.env`
+3. `.env-backup`
 
-1. **Connection** — review / override host, user, password; live connection test
-2. **Database folder** — pick from directories under `BASE_DIR`
-3. **Backup file** — sorted list with sizes; defaults to latest
-4. **Schema selection** — parsed from dump TOC via `pg_restore --list`
-5. **Table selection** — optional per-schema table filter
-6. **Role analysis** — detect missing owners; offer: create / `--no-owner` / ignore
-7. **Restore options** — full / schema-only / data-only, clean mode, parallel workers, dry-run
-8. **Target database** — rename, drop-and-recreate, or overlay
+Directories searched:
 
----
+1. current working directory
+2. project directory
+3. parent repo directory
 
-## Configuration reference
+### Main keys
 
-| Key | Default | Description |
-|-----|---------|-------------|
-| `PG_USERNAME` | `postgres` | PostgreSQL role to connect as |
-| `PG_PASSWORD` | *(required)* | Password |
-| `PG_HOST` | `127.0.0.1` | Host (ignored in Docker mode) |
-| `PG_PORT` | `5432` | Port (ignored in Docker mode) |
-| `SERVICE` | `postgres` | Docker container name |
-| `USE_DOCKER` | `true` | Use `docker exec` instead of direct connection |
-| `BASE_DIR` | *(required)* | Root directory for backup files |
-| `COMPRESS_FILE` | `false` | Gzip compress dump files |
-| `KEEP_DAYS` | `7` | Retention in days (0 = keep forever) |
-| `PSQL_CMD` | `psql` | Override psql binary path |
-| `PG_DUMP_CMD` | `pg_dump` | Override pg_dump binary path |
-| `PG_RESTORE_CMD` | `pg_restore` | Override pg_restore binary path |
+- `DB_TYPE=postgres|mariadb|mssql`
+- `PG_USERNAME`, `PG_PASSWORD`, `PG_HOST`, `PG_PORT`
+- `USE_DOCKER=true|false`
+- `SERVICE=<container-name>`
+- `BASE_DIR=<backup-root>`
+- `COMPRESS_FILE=true|false`
+- `KEEP_DAYS=<int>`
+- `CONNECTION_TIMEOUT=<seconds>`
 
----
+PostgreSQL-specific:
 
-## Config file lookup order
+- `PG_DUMP_CMD`
+- `PG_RESTORE_CMD`
 
-When no `--config` flag is given, the tool searches these locations in order and
-uses the **first file found**:
+MariaDB-specific:
 
-```
-<project-dir>/.backup      ← checked first
-<project-dir>/.env
-<repo-root>/.backup
-<repo-root>/.env
-```
+- `MYSQL_DUMP_CMD`
+- `MYSQL_CMD`
 
-This means you can drop either a `.backup` or a `.env` alongside the tool (or in
-the repo root for monorepo layouts) and it will be picked up automatically.
+MSSQL-specific:
 
----
+- `MSSQL_BACKUP_DIR`
 
-## Docker notes
+## Notes
 
-When `USE_DOCKER=true`, fuelrod-backup runs all commands via `docker exec`, explicitly
-injecting `PGPASSWORD` and `PGUSER` as `-e` flags so the container's own
-`POSTGRES_USER` env var cannot override them.
-
-TOC reads use `docker cp` (not `docker exec -i`) to avoid binary stream corruption
-under WSL/Docker Desktop.
-
----
+- Effective backup output directory is `<BASE_DIR>/<DB_TYPE>/...`.
+- PostgreSQL backups use custom format `.dump` (optional `.gz`).
+- MariaDB backups use `.sql` (optional `.gz` or `.zip` input supported on restore).
+- MSSQL backups use `.bak`.
 
 ## License
 
-GNU General Public License v3 or later — see [LICENSE](LICENSE).
+GNU General Public License v3.0 or later. See [LICENSE](LICENSE).

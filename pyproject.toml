@@ -1,15 +1,15 @@
 [project]
 name = "fuelrod-backup"
 version = "1.2.0"
-description = ""
+description = "Interactive backup and restore CLI for PostgreSQL, MariaDB, and MSSQL."
 authors = [
     { name = "masgeek", email = "barsamms@gmail.com" }
 ]
 license = "GPL-3.0-or-later"
 readme = "README.md"
-homepage = "https://github.com/masgeek/proxy-tool"
-repository = "https://github.com/masgeek/proxy-tool"
-documentation = "https://github.com/masgeek/proxy-tool#readme"
+homepage = "https://github.com/masgeek/fuelrod-backup"
+repository = "https://github.com/masgeek/fuelrod-backup"
+documentation = "https://github.com/masgeek/fuelrod-backup#readme"
 keywords = ["postgresql", "postgres", "mariadb", "mysql", "mssql", "backup", "restore", "docker", "cli", "devops"]
 
 classifiers = [

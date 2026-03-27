@@ -261,7 +261,7 @@ def run_backup(
                 _die("No databases found.")
 
     if not cfg.base_dir:
-        _die("BASE_DIR is not set. Add it to .backup or pass --output-dir.")
+        _die("BASE_DIR is not set. Add it to .backup/.env config.")
 
     Path(cfg.backup_dir).mkdir(parents=True, exist_ok=True)
 

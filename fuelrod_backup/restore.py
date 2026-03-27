@@ -294,14 +294,8 @@ def _step_table_selection(toc: str, selected_schemas: list[str]) -> list[str]:
 
     table_args: list[str] = []
     if selected:
-        seen_schemas: set[str] = set()
         for entry in selected:
-            schema, tname = entry.split(".", 1)
-            if schema not in seen_schemas and not any(
-                    a == schema for a in table_args if table_args
-            ):
-                seen_schemas.add(schema)
-            table_args += ["-t", tname]
+            table_args += ["-t", entry]
         console.print(f"  Table filter applied: {', '.join(selected)}")
     return table_args
 

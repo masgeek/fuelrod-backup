@@ -1,4 +1,4 @@
-"""fuelrod-backup: Interactive PostgreSQL backup and restore CLI."""
+"""fuelrod-backup: Interactive multi-engine database backup and restore CLI."""
 
 from importlib.metadata import version, PackageNotFoundError
 
