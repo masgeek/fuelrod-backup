@@ -400,5 +400,43 @@ def n8n_restore_cmd(
     run_n8n_restore(cfg, service=service, backup_file=backup_file, dry_run=dry_run, verbose=verbose)
 
 
+@app.command("gdrive-sync")
+def gdrive_sync_cmd(
+        dry_run: Annotated[
+            bool,
+            typer.Option("--dry-run", "-d", help="Show what would happen — no files moved or deleted."),
+        ] = False,
+        gdrive: Annotated[
+            str | None,
+            typer.Option("--gdrive", "-g", help="Google Drive remote folder name (overrides GDRIVE)."),
+        ] = None,
+        days: Annotated[
+            int | None,
+            typer.Option("--days", "-n", help="Prune remote files older than N days (overrides BACKUP_AGE)."),
+        ] = None,
+        include: Annotated[
+            list[str],
+            typer.Option("--include", "-i", help="Glob pattern to include (repeatable, overrides INCLUDE_FILES)."),
+        ] = [],
+        keep_local: Annotated[
+            bool,
+            typer.Option("--keep-local", help="Do NOT delete local files after a successful upload."),
+        ] = False,
+        config_file: Annotated[Path | None, _CONFIG_OPT] = None,
+) -> None:
+    """Sync local backups to Google Drive via rclone, then prune old remote files."""
+    from .gdrive_sync import run_gdrive_sync
+
+    cfg = load_config(config_file)
+    run_gdrive_sync(
+        cfg,
+        dry_run=dry_run,
+        gdrive_remote=gdrive,
+        age_days=days,
+        include_patterns=list(include) or None,
+        delete_local=not keep_local,
+    )
+
+
 if __name__ == "__main__":
     app()

@@ -44,6 +44,13 @@ class Config:
     mysql_cmd: str = "mysql"
     # MSSQL specific
     mssql_backup_dir: str = "/var/opt/mssql/backups"  # path inside container
+    # Google Drive sync (gbk / rclone)
+    gdrive_remote: str = "db-backup"          # GDRIVE — rclone remote folder name
+    gdrive_age_days: int = 2                  # BACKUP_AGE — prune remote files older than N days
+    gdrive_include: list[str] = field(default_factory=lambda: [
+        "*.sql.zip", "*.sql.gz", "*_backups.zip", "*.tar.gz",
+        "*.dump", "*.dump.gz", "*.bak", "*.txt",
+    ])                                        # INCLUDE_FILES — space-separated glob patterns
     config_source: Path | None = field(default=None, repr=False)  # which file was loaded
 
     @property
@@ -202,5 +209,15 @@ def load_config(config_file: Path | None = None) -> Config:
     cfg.n8n_services = [s.strip() for s in raw_n8n.split() if s.strip()]
     raw_skip = _get("SKIP_SERVICES", "").strip()
     cfg.skip_services = [s.strip() for s in raw_skip.split() if s.strip()] if raw_skip else []
+
+    # Google Drive sync
+    cfg.gdrive_remote = _get("GDRIVE", "db-backup")
+    try:
+        cfg.gdrive_age_days = int(_get("BACKUP_AGE", "2"))
+    except ValueError:
+        cfg.gdrive_age_days = 2
+    raw_include = _get("INCLUDE_FILES", "").strip()
+    if raw_include:
+        cfg.gdrive_include = [p.strip() for p in raw_include.split() if p.strip()]
 
     return cfg
