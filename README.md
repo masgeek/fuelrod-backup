@@ -54,6 +54,8 @@ fuelrod-backup restore
 - [Configuration Reference](docs/CONFIGURATION.md)
 - [Architecture and Workflows](docs/ARCHITECTURE.md)
 - [Code Review Notes](docs/CODE_REVIEW.md)
+- [Feature Plan](docs/FEATURE_PLAN.md)
+- [Feature Checklist](docs/FEATURE_CHECKLIST.md)
 - Example config: [`.backup.example`](.backup.example)
 
 ## CLI Commands
