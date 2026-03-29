@@ -29,6 +29,9 @@ jobs:
           path: .venv
           key: venv-lint-${{ runner.os }}-${{ hashFiles('poetry.lock') }}
 
+      - name: Lock dependencies
+        run: poetry lock
+
       - name: Install dependencies
         run: poetry install
 
@@ -61,6 +64,9 @@ jobs:
           path: .venv
           key: venv-${{ matrix.python-version }}-${{ runner.os }}-${{ hashFiles('poetry.lock') }}
 
+      - name: Lock dependencies
+        run: poetry lock
+
       - name: Install dependencies
         run: poetry install
 
@@ -86,6 +92,9 @@ jobs:
         with:
           virtualenvs-in-project: true
 
+      - name: Lock dependencies
+        run: poetry lock
+        
       - name: Install dependencies
         run: poetry install
 
