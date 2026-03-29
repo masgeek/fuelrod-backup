@@ -1,14 +1,20 @@
-"""Google Drive sync via rclone (replaces gbk.sh)."""
+"""Google Drive sync via rclone-python (replaces gbk.sh)."""
 
 from __future__ import annotations
 
-import shutil
-import subprocess
 import sys
 from pathlib import Path
 
+import rclone
 from rich.console import Console
 from rich.panel import Panel
+from rich.progress import (
+    BarColumn,
+    Progress,
+    TaskProgressColumn,
+    TextColumn,
+    TransferSpeedColumn,
+)
 from rich.table import Table
 
 from .config import Config
@@ -34,25 +40,15 @@ def _human_size(path: Path) -> str:
     return f"{size / 1024:.1f} KB"
 
 
-def _rclone(*args: str, dry_run: bool = False, check: bool = True) -> subprocess.CompletedProcess:
-    cmd = ["rclone"] + list(args)
-    if dry_run:
-        cmd.append("--dry-run")
-    return subprocess.run(cmd, check=check)
-
-
 def _collect_files(base_dir: Path, patterns: list[str]) -> list[Path]:
     """Return all files under base_dir matching any of the glob patterns."""
-    found: list[Path] = []
-    for pattern in patterns:
-        found.extend(base_dir.rglob(pattern))
-    # Deduplicate while preserving order
     seen: set[Path] = set()
     result: list[Path] = []
-    for f in found:
-        if f not in seen and f.is_file():
-            seen.add(f)
-            result.append(f)
+    for pattern in patterns:
+        for f in base_dir.rglob(pattern):
+            if f.is_file() and f not in seen:
+                seen.add(f)
+                result.append(f)
     return sorted(result)
 
 
@@ -66,24 +62,23 @@ def run_gdrive_sync(
         delete_local: bool = True,
 ) -> None:
     """
-    Sync local backups to Google Drive via rclone, then prune old remote files.
+    Sync local backups to Google Drive via rclone-python, then prune old remote files.
 
     Safety guarantee (fixes gbk.sh risk): local files are only deleted AFTER
-    rclone copy exits with code 0. If the copy fails, the exception propagates
-    and no local files are removed.
+    rclone.copy() completes without raising an exception. If the copy fails,
+    the exception propagates and no local files are removed.
     """
-    if not shutil.which("rclone"):
+    if not rclone.is_installed():
         _die("rclone not found in PATH. Install it from https://rclone.org/install/")
 
     remote = gdrive_remote or cfg.gdrive_remote
     days = age_days if age_days is not None else cfg.gdrive_age_days
     patterns = include_patterns or cfg.gdrive_include
     base_dir = Path(cfg.base_dir)
+    remote_path = f"gdrive:{remote}/"
 
     if not base_dir.is_dir():
         _die(f"Backup directory not found: {base_dir}")
-
-    remote_path = f"gdrive:{remote}/"
 
     console.print()
     console.print(Panel(
@@ -111,36 +106,48 @@ def run_gdrive_sync(
     console.print(table)
     console.print(f"  Total: [bold]{len(files)}[/] file(s)")
 
-    # ── Ensure remote folder exists ────────────────────────────────
-    _section("Prepare remote")
-    if dry_run:
-        console.print(f"  [dim][DRY RUN] Would create remote folder: {remote_path}[/]")
-    else:
-        console.print(f"  Creating remote folder if needed: {remote_path}")
-        subprocess.run(["rclone", "mkdir", remote_path], check=True)
-
-    # ── Copy to Google Drive ───────────────────────────────────────
-    _section("Uploading")
+    # ── Build include args ─────────────────────────────────────────
     include_args: list[str] = []
     for pat in patterns:
         include_args += ["--include", pat]
 
-    copy_cmd = [
-        "rclone", "copy", str(base_dir) + "/", remote_path,
+    transfer_args = [
+        "--create-empty-src-dirs",
+        "--transfers", "2",
+        "--checkers", "4",
+        "--tpslimit", "10",
+        "--bwlimit", "2M",
+        "--contimeout", "60s",
+        "--timeout", "300s",
+        "--retries", "3",
+        "--low-level-retries", "10",
         *include_args,
-        "--verbose", "--progress", "--create-empty-src-dirs",
-        "--transfers", "2", "--checkers", "4",
-        "--tpslimit", "10", "--bwlimit", "2M",
-        "--contimeout", "60s", "--timeout", "300s",
-        "--retries", "3", "--low-level-retries", "10",
     ]
-    if dry_run:
-        copy_cmd.append("--dry-run")
 
-    console.print(f"  [dim]{' '.join(copy_cmd[:6])} ...[/]")
-    # check=True ensures we raise on failure — local cleanup below only runs on success
-    subprocess.run(copy_cmd, check=True)
-    console.print("[green]Upload complete.[/]")
+    # ── Upload to Google Drive ─────────────────────────────────────
+    _section("Uploading")
+
+    pbar = Progress(
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TransferSpeedColumn(),
+        console=console,
+    )
+
+    if dry_run:
+        console.print(f"  [dim][DRY RUN] Would copy {base_dir}/ → {remote_path}[/]")
+        for f in files:
+            console.print(f"  [dim]  {f.relative_to(base_dir)}[/]")
+    else:
+        # copy() raises on failure — local cleanup below only runs on success
+        rclone.copy(
+            str(base_dir) + "/",
+            remote_path,
+            args=transfer_args,
+            pbar=pbar,
+        )
+        console.print("[green]Upload complete.[/]")
 
     # ── Delete local files (only reached if copy succeeded) ────────
     if delete_local:
@@ -156,16 +163,21 @@ def run_gdrive_sync(
     # ── Prune old files on Google Drive ───────────────────────────
     _section(f"Pruning remote files older than {days} days")
     for pat in patterns:
-        prune_cmd = [
-            "rclone", "--drive-use-trash=false", "--verbose",
-            "--min-age", f"{days}d", "--include", pat,
-            "--tpslimit", "10", "--transfers", "2",
-            "delete", f"gdrive:{remote}",
+        prune_args = [
+            "--drive-use-trash=false",
+            "--min-age", f"{days}d",
+            "--include", pat,
+            "--tpslimit", "10",
+            "--transfers", "2",
         ]
         if dry_run:
-            prune_cmd.append("--dry-run")
+            prune_args.append("--dry-run")
         console.print(f"  [dim]Pruning pattern: {pat}[/]")
-        subprocess.run(prune_cmd, check=False)  # non-fatal if pattern matches nothing
+        # delete() is non-fatal per pattern — missing matches are not errors
+        try:
+            rclone.delete(f"gdrive:{remote}", args=prune_args)
+        except Exception as exc:
+            console.print(f"  [yellow]Warning: prune failed for '{pat}': {exc}[/]")
 
     console.print()
     console.print(Panel("[bold green]SYNC COMPLETE[/]", expand=False))
