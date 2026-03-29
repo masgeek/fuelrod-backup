@@ -94,7 +94,7 @@ jobs:
 
       - name: Lock dependencies
         run: poetry lock
-        
+
       - name: Install dependencies
         run: poetry install
 
