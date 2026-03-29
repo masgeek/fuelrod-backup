@@ -354,5 +354,89 @@ def init_config(
     console.print(f"\n  Verify with: [bold]fuelrod-backup test --config {output}[/]\n")
 
 
+@app.command("n8n-backup")
+def n8n_backup_cmd(
+        no_interactive: Annotated[
+            bool,
+            typer.Option("--no-interactive", "-n", help="Skip wizard; back up all services."),
+        ] = False,
+        services: Annotated[
+            list[str],
+            typer.Option("--service", "-s", help="Service(s) to back up (repeatable). Default: all."),
+        ] = [],
+        config_file: Annotated[Path | None, _CONFIG_OPT] = None,
+) -> None:
+    """Back up n8n Docker volumes (hot snapshot, no downtime)."""
+    from .n8n_backup import run_n8n_backup
+
+    cfg = load_config(config_file)
+    run_n8n_backup(cfg, interactive=not no_interactive, services=list(services) or None)
+
+
+@app.command("n8n-restore")
+def n8n_restore_cmd(
+        service: Annotated[
+            str | None,
+            typer.Option("--service", "-s", help="Service name to restore."),
+        ] = None,
+        backup_file: Annotated[
+            Path | None,
+            typer.Option("--file", "-f", help="Backup .tar.gz to restore directly.", exists=True, dir_okay=False),
+        ] = None,
+        dry_run: Annotated[
+            bool,
+            typer.Option("--dry-run", help="Show plan only — no changes made."),
+        ] = False,
+        verbose: Annotated[
+            bool,
+            typer.Option("--verbose", "-v", help="Print detailed step logs."),
+        ] = False,
+        config_file: Annotated[Path | None, _CONFIG_OPT] = None,
+) -> None:
+    """Restore an n8n Docker volume from a backup archive."""
+    from .n8n_restore import run_n8n_restore
+
+    cfg = load_config(config_file)
+    run_n8n_restore(cfg, service=service, backup_file=backup_file, dry_run=dry_run, verbose=verbose)
+
+
+@app.command("gdrive-sync")
+def gdrive_sync_cmd(
+        dry_run: Annotated[
+            bool,
+            typer.Option("--dry-run", "-d", help="Show what would happen — no files moved or deleted."),
+        ] = False,
+        gdrive: Annotated[
+            str | None,
+            typer.Option("--gdrive", "-g", help="Google Drive remote folder name (overrides GDRIVE)."),
+        ] = None,
+        days: Annotated[
+            int | None,
+            typer.Option("--days", "-n", help="Prune remote files older than N days (overrides BACKUP_AGE)."),
+        ] = None,
+        include: Annotated[
+            list[str],
+            typer.Option("--include", "-i", help="Glob pattern to include (repeatable, overrides INCLUDE_FILES)."),
+        ] = [],
+        keep_local: Annotated[
+            bool,
+            typer.Option("--keep-local", help="Do NOT delete local files after a successful upload."),
+        ] = False,
+        config_file: Annotated[Path | None, _CONFIG_OPT] = None,
+) -> None:
+    """Sync local backups to Google Drive via rclone, then prune old remote files."""
+    from .gdrive_sync import run_gdrive_sync
+
+    cfg = load_config(config_file)
+    run_gdrive_sync(
+        cfg,
+        dry_run=dry_run,
+        gdrive_remote=gdrive,
+        age_days=days,
+        include_patterns=list(include) or None,
+        delete_local=not keep_local,
+    )
+
+
 if __name__ == "__main__":
     app()

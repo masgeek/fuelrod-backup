@@ -31,6 +31,9 @@ class Config:
     compress: bool = False
     days_to_keep: int = 7
     connection_timeout: int = 30  # seconds; applies to driver connect + docker subprocess checks
+    # n8n volume backup
+    n8n_services: list[str] = field(default_factory=lambda: ["n8n"])
+    skip_services: list[str] = field(default_factory=lambda: [])
     psql_cmd: str = "psql"
     pg_dump_cmd: str = "pg_dump"
     pg_restore_cmd: str = "pg_restore"
@@ -41,6 +44,13 @@ class Config:
     mysql_cmd: str = "mysql"
     # MSSQL specific
     mssql_backup_dir: str = "/var/opt/mssql/backups"  # path inside container
+    # Google Drive sync (gbk / rclone)
+    gdrive_remote: str = "db-backup"          # GDRIVE — rclone remote folder name
+    gdrive_age_days: int = 2                  # BACKUP_AGE — prune remote files older than N days
+    gdrive_include: list[str] = field(default_factory=lambda: [
+        "*.sql.zip", "*.sql.gz", "*_backups.zip", "*.tar.gz",
+        "*.dump", "*.dump.gz", "*.bak", "*.txt",
+    ])                                        # INCLUDE_FILES — space-separated glob patterns
     config_source: Path | None = field(default=None, repr=False)  # which file was loaded
 
     @property
@@ -193,5 +203,21 @@ def load_config(config_file: Path | None = None) -> Config:
         cfg.days_to_keep = int(_get("KEEP_DAYS", "7"))
     except ValueError:
         cfg.days_to_keep = 7
+
+    # n8n volume backup
+    raw_n8n = _get("N8N_SERVICES", "n8n").strip()
+    cfg.n8n_services = [s.strip() for s in raw_n8n.split() if s.strip()]
+    raw_skip = _get("SKIP_SERVICES", "").strip()
+    cfg.skip_services = [s.strip() for s in raw_skip.split() if s.strip()] if raw_skip else []
+
+    # Google Drive sync
+    cfg.gdrive_remote = _get("GDRIVE", "db-backup")
+    try:
+        cfg.gdrive_age_days = int(_get("BACKUP_AGE", "2"))
+    except ValueError:
+        cfg.gdrive_age_days = 2
+    raw_include = _get("INCLUDE_FILES", "").strip()
+    if raw_include:
+        cfg.gdrive_include = [p.strip() for p in raw_include.split() if p.strip()]
 
     return cfg
