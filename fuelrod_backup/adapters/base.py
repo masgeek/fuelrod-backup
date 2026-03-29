@@ -77,3 +77,16 @@ class DbAdapter(ABC):
 
     def terminate_connections(self, dbname: str) -> int:
         return 0
+
+    def role_exists(self, role: str) -> bool:
+        raise NotImplementedError(f"{type(self).__name__} does not support role_exists")
+
+    def create_role(
+        self,
+        role: str,
+        *,
+        superuser: bool,
+        can_login: bool,
+        password: str | None,
+    ) -> None:
+        raise NotImplementedError(f"{type(self).__name__} does not support create_role")

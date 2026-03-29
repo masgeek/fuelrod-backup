@@ -58,7 +58,7 @@ def _is_container_running(service: str) -> bool:
         text=True,
         check=True,
     )
-    return service in result.stdout
+    return any(line.strip() == service for line in result.stdout.splitlines())
 
 
 def _get_volume_size(volume_name: str) -> str:

@@ -119,34 +119,15 @@ def _parse_owners_from_toc(toc: str) -> List[str]:
     Only considers:
       - explicit ROLE/USER/GROUP objects
       - owners of objects
-     Ignore system roles, table names, indexes, and schemas.
+    Ignore system roles, table names, indexes, and schemas.
     """
     roles = set()
-
-    for line in toc.splitlines():
-        line = line.strip()
-        if not line or line.startswith(';'):
-            continue  # skip comments and empty lines
-
-        # pg_restore -l columns: DumpId; TableId ObjectType Schema Name Owner
-        # columns may be separated by spaces, but Owner is always last
-        parts = line.split()
-        if len(parts) < 5:
-            continue  # malformed line, skip
-
-        obj_type = parts[3]  # 4th column is object type
-        owner = parts[-1]  # last column is owner
-        name = parts[4]  # object name
-
-        # skip system roles
-        if owner and not _SYSTEM_ROLE_RE.match(owner):
+    for obj_type, schema, name, owner in _iter_toc(toc):
+        if owner != "-" and not _SYSTEM_ROLE_RE.match(owner):
             roles.add(owner)
-
-        # include roles explicitly defined in dump
         if obj_type.upper() in ("ROLE", "USER", "GROUP"):
-            if name and not _SYSTEM_ROLE_RE.match(name):
+            if name != "-" and not _SYSTEM_ROLE_RE.match(name):
                 roles.add(name)
-
     return sorted(roles)
 
 

@@ -163,7 +163,7 @@ def _backup_one(
         exclude_schemas=[],
     )
 
-    if cfg.compress and not dump_file.suffix == ".bak":
+    if cfg.compress and dump_file.suffix != ".bak":
         gz_file = Path(str(dump_file) + ".gz")
         with dump_file.open("rb") as f_in, gzip.open(gz_file, "wb", compresslevel=9) as f_out:
             shutil.copyfileobj(f_in, f_out)
@@ -191,6 +191,11 @@ def _cleanup_old(base_dir: str, days: int) -> None:
             if f.stat().st_mtime < cutoff:
                 f.unlink()
                 console.print(f"  [dim]Removed old backup: {f.name}[/]")
+    # Remove empty per-database subdirectories left after file pruning
+    for db_dir in base.iterdir():
+        if db_dir.is_dir() and not any(db_dir.iterdir()):
+            db_dir.rmdir()
+            console.print(f"  [dim]Removed empty directory: {db_dir.name}[/]")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
