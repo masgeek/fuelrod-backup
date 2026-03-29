@@ -1,0 +1,31 @@
+name: Next Release PR
+
+on:
+  push:
+    branches:
+      - develop
+
+jobs:
+  next-release-pr:
+    name: Open PR develop → main
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create pull request
+        uses: devops-infra/action-pull-request@v0.5.5
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          title: 'Next release'
+          reviewer: ${{ github.actor }}
+          assignee: ${{ github.actor }}
+          target_branch: main
+          label: release
+          old_string: "**Write your description here**"
+          body: "${{ github.event.head_commit.message }}"
+          new_string: "${{ github.event.head_commit.message }}"
+          get_diff: false

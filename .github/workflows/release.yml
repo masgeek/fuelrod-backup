@@ -1,31 +1,41 @@
 name: Release
 
 on:
+  pull_request:
+    branches:
+      - main
+    types: [closed]
   workflow_dispatch:
-    inputs:
-      bump:
-        description: "Version bump type"
-        required: true
-        type: choice
-        options: [patch, minor, major]
 
 permissions:
-  contents: write  # push commit + tag
+  contents: write
 
 jobs:
   release:
-    name: Bump → tag → build → publish
+    name: Tag → version → build → publish
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
-    environment: pypi  # optional: add a GitHub environment for approval gate
+    # Run only when a PR is actually merged into main, or on manual dispatch from main.
+    # Prevents accidental releases from closed-but-not-merged PRs.
+    if: |
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event.pull_request.merged == true)
+    # Never cancel a release mid-flight — partial releases are harder to recover from
+    # than waiting for a duplicate run to be skipped by the tag action.
+    concurrency:
+      group: release-${{ github.head_ref || github.ref_name }}
+      cancel-in-progress: false
+    environment: pypi
 
     steps:
       - uses: actions/checkout@v4
         with:
-          # GITHUB_TOKEN can push to main if branch protection allows it.
-          # If your branch is protected, replace with a PAT stored as a secret:
-          #   token: ${{ secrets.RELEASE_PAT }}
+          # fetch-depth: 0 is required — the tag action needs full commit history
+          # and all existing tags to compute the next semver bump correctly.
+          fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fetch tags
+        run: git fetch --tags
 
       - uses: actions/setup-python@v5
         with:
@@ -45,33 +55,40 @@ jobs:
       - name: Test
         run: poetry run pytest -q
 
-      - name: Bump version (${{ inputs.bump }})
-        run: poetry version ${{ inputs.bump }}
+      - name: Generate tag
+        id: tag_version
+        uses: masgeek/github-tag-action@release
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          tag_prefix: ""
+          create_annotated_tag: true
 
-      - name: Read new version
-        id: version
-        run: echo "value=$(poetry version --short)" >> "$GITHUB_OUTPUT"
+      - name: Sync pyproject.toml version to tag
+        # Keeps the version in pyproject.toml consistent with the Git tag so that
+        # the published PyPI wheel and sdist carry the correct version string.
+        run: poetry version ${{ steps.tag_version.outputs.new_tag }}
 
-      - name: Commit and push
+      - name: Commit version bump
         run: |
-          git config user.name  "github-actions[bot]"
+          git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add pyproject.toml
-          git commit -m "chore: release ${{ steps.version.outputs.value }}"
-          git tag -a "${{ steps.version.outputs.value }}" \
-              -m "Release ${{ steps.version.outputs.value }}"
-          git push origin HEAD:main --follow-tags
+          git commit -m "chore: release ${{ steps.tag_version.outputs.new_tag }}"
+          git push origin HEAD:main
 
       - name: Build
         run: poetry build
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: ncipollo/release-action@v1.15.0
         with:
-          tag_name: ${{ steps.version.outputs.value }}
-          name: Release ${{ steps.version.outputs.value }}
-          generate_release_notes: true
-          files: dist/*
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag: ${{ steps.tag_version.outputs.new_tag }}
+          name: Release ${{ steps.tag_version.outputs.new_tag }}
+          body: ${{ steps.tag_version.outputs.changelog }}
+          artifacts: "dist/*"
+          makeLatest: true
+          allowUpdates: true
 
       - name: Publish to PyPI
         run: poetry publish
