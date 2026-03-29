@@ -46,12 +46,35 @@ fr-bkp = "fuelrod_backup.cli:app"
 [dependency-groups]
 dev = [
     "pytest (>=9.0.2,<10.0.0)",
-    "pytest-mock (>=3.15.1,<4.0.0)"
+    "pytest-mock (>=3.15.1,<4.0.0)",
+    "ruff (>=0.15.8,<0.16.0)"
 ]
 
 
 [tool.poetry]
 packages = [{ include = "fuelrod_backup" }]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "S",   # flake8-bandit (security)
+]
+ignore = [
+    "S603",  # subprocess call — reviewed; list form is used throughout (no shell=True)
+    "S607",  # partial executable path — docker/pg_dump/mysqldump are expected on PATH
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Test helpers may use assert directly
+"tests/**" = ["S101"]
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]

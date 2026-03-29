@@ -10,13 +10,12 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import List
 
-from . import prompt as questionary
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from . import prompt as questionary
 from .adapters import get_adapter
 from .adapters.base import DbAdapter
 from .config import Config
@@ -112,7 +111,7 @@ def _parse_schemas_from_toc(toc: str) -> list[str]:
     return sorted(schemas)
 
 
-def _parse_owners_from_toc(toc: str) -> List[str]:
+def _parse_owners_from_toc(toc: str) -> list[str]:
     """
     Extract all roles referenced in a pg_restore TOC dump.
 

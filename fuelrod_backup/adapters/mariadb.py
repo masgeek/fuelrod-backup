@@ -303,7 +303,7 @@ class MariaDbAdapter(DbAdapter):
                         try:
                             cur.execute("KILL %s", (int(tid),))
                             killed += 1
-                        except Exception:
+                        except Exception:  # noqa: S110 — KILL failure is expected (conn already gone)
                             pass
                 return killed
             finally:

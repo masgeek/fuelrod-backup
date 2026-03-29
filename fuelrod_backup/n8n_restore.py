@@ -9,11 +9,11 @@ import tarfile
 import tempfile
 from pathlib import Path
 
-from . import prompt as questionary
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from . import prompt as questionary
 from .config import Config
 
 console = Console()
@@ -247,7 +247,7 @@ def _execute_restore(
         console.print(f"  Stopping container [bold]{service}[/]...")
         try:
             subprocess.run(["docker", "stop", service], capture_output=True, text=True, check=True)
-            console.print(f"  Container stopped.")
+            console.print("  Container stopped.")
         except subprocess.CalledProcessError as exc:
             console.print(
                 f"  [yellow]WARN:[/] Failed to stop container '{service}': "
@@ -338,7 +338,7 @@ def _execute_restore(
             text=True,
             check=True,
         )
-        console.print(f"  Container started.")
+        console.print("  Container started.")
 
     finally:
         # Step 9 — Clean temp dir
@@ -369,7 +369,8 @@ def _dry_run_restore(
         f"Clear volume: docker run --rm -v {volume_name}:/data alpine sh -c 'rm -rf /data/*'",
         f"Extract backup (host-side): tarfile.open({backup_file}).extractall(<temp_dir>)",
         "Determine source dir: check temp_snapshot → data → temp_dir root",
-        f"Copy files: docker run --rm -v {volume_name}:/data -v <src_dir>:/restore alpine sh -c 'cp -a /restore/. /data/'",
+        f"Copy files: docker run --rm -v {volume_name}:/data -v <src_dir>:/restore "
+        "alpine sh -c 'cp -a /restore/. /data/'",
         f"Set permissions: docker run --rm -v {volume_name}:/data alpine sh -c 'chown -R 1000:1000 /data'",
         f"Start container: docker start {service}",
         "Clean temporary extraction directory",

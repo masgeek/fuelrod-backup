@@ -11,7 +11,6 @@ For restore, the .bak is first copied into the container, then RESTORE is run.
 
 from __future__ import annotations
 
-import os
 import re
 import subprocess
 from pathlib import Path
@@ -265,7 +264,7 @@ class MssqlAdapter(DbAdapter):
     def terminate_connections(self, dbname: str) -> int:
         _validate_identifier(dbname, "database name")
         sql = (
-            f"DECLARE @sql NVARCHAR(MAX) = ''; "
+            f"DECLARE @sql NVARCHAR(MAX) = ''; "  # noqa: S608 — dbname validated by _validate_identifier above
             f"SELECT @sql = @sql + 'KILL ' + CAST(spid AS NVARCHAR) + '; ' "
             f"FROM sys.sysprocesses WHERE dbid = DB_ID(N'{dbname}') AND spid <> @@SPID; "
             f"EXEC sp_executesql @sql;"
@@ -288,5 +287,5 @@ def _classify_mssql_error(exc: Exception, cfg: Config) -> str:
     if "connection refused" in msg or "could not connect" in msg:
         return f"Connection refused at {cfg.host}:{cfg.port}. Is SQL Server running?"
     if "cannot open" in msg and "database" in msg:
-        return f"Cannot open database. Check MSSQL_HOST and that SQL Server is accessible."
+        return "Cannot open database. Check MSSQL_HOST and that SQL Server is accessible."
     return str(exc)

@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import concurrent.futures
 import sys
-import time
 
 import questionary as _q
 from rich.console import Console

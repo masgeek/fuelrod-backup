@@ -69,7 +69,6 @@ class PostgresAdapter(DbAdapter):
         control over scope / clean / jobs arguments)."""
         import gzip
         import shutil
-        import subprocess
         import tempfile
 
         extra: list[str] = []
@@ -86,7 +85,6 @@ class PostgresAdapter(DbAdapter):
             "-v",
         ] + extra
 
-        cfg = self._cfg
         if dump_file.suffix == ".gz":
             with tempfile.NamedTemporaryFile(suffix=".dump", delete=False) as tmp_file:
                 tmp = Path(tmp_file.name)

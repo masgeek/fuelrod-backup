@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 from typing import Annotated
 
@@ -114,8 +113,8 @@ def test_connection(
     console.print("[bold]Resolved settings:[/]")
     console.print(f"  Config source : {source}")
     console.print(f"  DB type       : [cyan]{cfg.db_type.value}[/]")
-    console.print(
-        f"  Mode          : {'[cyan]Docker[/] — service ' + repr(cfg.service) if cfg.use_docker else 'Direct'}{docker_override}")
+    mode = f"[cyan]Docker[/] — service {cfg.service!r}" if cfg.use_docker else "Direct"
+    console.print(f"  Mode          : {mode}{docker_override}")
     console.print(f"  Host          : {cfg.host}:{cfg.port}")
     console.print(f"  User          : {cfg.user}")
     console.print(f"  Password      : {pass_hint}")
@@ -355,7 +354,7 @@ def init_config(
         pass  # Windows does not support Unix file permissions
     verb = "updated" if updating else "written"
     console.print(f"\n[bold green]✓[/] Config {verb}: [bold]{output}[/]")
-    console.print(f"  [yellow]Note:[/] This file contains a plaintext password — keep it private.")
+    console.print("  [yellow]Note:[/] This file contains a plaintext password — keep it private.")
     console.print(f"\n  Verify with: [bold]fuelrod-backup test --config {output}[/]\n")
 
 

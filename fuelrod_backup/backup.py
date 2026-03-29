@@ -9,11 +9,11 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from . import prompt as questionary
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from . import prompt as questionary
 from .adapters import get_adapter
 from .adapters.base import DbAdapter
 from .config import Config

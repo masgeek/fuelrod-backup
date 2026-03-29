@@ -13,9 +13,9 @@ import gzip
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Generator
 
 import psycopg
 from psycopg import sql as pgsql
@@ -62,7 +62,7 @@ class PgRunner:
     @contextmanager
     def _connect(
         self, dbname: str = "postgres", *, autocommit: bool = False
-    ) -> Generator[psycopg.Connection, None, None]:
+    ) -> Generator[psycopg.Connection]:
         """
         Open a psycopg connection to host:port with explicit credentials.
 
@@ -179,7 +179,7 @@ class PgRunner:
                 work_file = tmp_plain
 
             if self.cfg.use_docker:
-                ctr_path = f"/tmp/pg_toc_{dump_file.stem}.dump"
+                ctr_path = f"/tmp/pg_toc_{dump_file.stem}.dump"  # noqa: S108 — path is inside the container, not the host
                 subprocess.run(
                     ["docker", "cp", str(work_file), f"{self.cfg.service}:{ctr_path}"],
                     check=True,

@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 
 from rich.console import Console as _Console
@@ -13,7 +13,7 @@ from rich.console import Console as _Console
 _console = _Console(stderr=True)
 
 
-class DbType(str, Enum):
+class DbType(StrEnum):
     POSTGRES = "postgres"
     MARIADB = "mariadb"
     MSSQL = "mssql"

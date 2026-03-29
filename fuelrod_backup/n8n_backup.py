@@ -7,11 +7,11 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from . import prompt as questionary
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from . import prompt as questionary
 from .config import Config
 
 console = Console()
@@ -190,7 +190,7 @@ def _backup_service(service: str, cfg: Config) -> None:
     summary_file.write_text(
         "\n".join([
             f"Backup Date: {now.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}",
-            f"Backup Type: Hot Backup (No Downtime)",
+            "Backup Type: Hot Backup (No Downtime)",
             f"Service: {service}",
             f"Source Volume: {volume_name}",
             f"Volume Size: {vol_size}",
