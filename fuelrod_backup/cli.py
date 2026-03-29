@@ -354,5 +354,51 @@ def init_config(
     console.print(f"\n  Verify with: [bold]fuelrod-backup test --config {output}[/]\n")
 
 
+@app.command("n8n-backup")
+def n8n_backup_cmd(
+        no_interactive: Annotated[
+            bool,
+            typer.Option("--no-interactive", "-n", help="Skip wizard; back up all services."),
+        ] = False,
+        services: Annotated[
+            list[str],
+            typer.Option("--service", "-s", help="Service(s) to back up (repeatable). Default: all."),
+        ] = [],
+        config_file: Annotated[Path | None, _CONFIG_OPT] = None,
+) -> None:
+    """Back up n8n Docker volumes (hot snapshot, no downtime)."""
+    from .n8n_backup import run_n8n_backup
+
+    cfg = load_config(config_file)
+    run_n8n_backup(cfg, interactive=not no_interactive, services=list(services) or None)
+
+
+@app.command("n8n-restore")
+def n8n_restore_cmd(
+        service: Annotated[
+            str | None,
+            typer.Option("--service", "-s", help="Service name to restore."),
+        ] = None,
+        backup_file: Annotated[
+            Path | None,
+            typer.Option("--file", "-f", help="Backup .tar.gz to restore directly.", exists=True, dir_okay=False),
+        ] = None,
+        dry_run: Annotated[
+            bool,
+            typer.Option("--dry-run", help="Show plan only — no changes made."),
+        ] = False,
+        verbose: Annotated[
+            bool,
+            typer.Option("--verbose", "-v", help="Print detailed step logs."),
+        ] = False,
+        config_file: Annotated[Path | None, _CONFIG_OPT] = None,
+) -> None:
+    """Restore an n8n Docker volume from a backup archive."""
+    from .n8n_restore import run_n8n_restore
+
+    cfg = load_config(config_file)
+    run_n8n_restore(cfg, service=service, backup_file=backup_file, dry_run=dry_run, verbose=verbose)
+
+
 if __name__ == "__main__":
     app()
