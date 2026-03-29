@@ -3,7 +3,6 @@ name: CI
 on:
   push:
     branches: [main]
-    tags: ["[0-9]*"]
   pull_request:
     branches: [main]
 
@@ -98,17 +97,5 @@ jobs:
       - name: Install dependencies
         run: poetry install
 
-      - name: Set version from tag
-        if: startsWith(github.ref, 'refs/tags/')
-        run: poetry version "$GITHUB_REF_NAME"
-
       - name: Build package
         run: poetry build
-
-      - name: Upload dist
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/upload-artifact@v4
-        with:
-          name: dist
-          path: dist/
-          retention-days: 7
