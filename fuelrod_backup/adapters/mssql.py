@@ -12,11 +12,25 @@ For restore, the .bak is first copied into the container, then RESTORE is run.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
 from ..config import Config
 from .base import DbAdapter
+
+# Identifiers interpolated into DDL (BACKUP/RESTORE/DROP/CREATE/KILL) cannot
+# be parameterised in T-SQL.  Validate them against a safe allowlist instead.
+_SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_\- ]+$")
+
+
+def _validate_identifier(name: str, label: str = "identifier") -> None:
+    """Raise ValueError if *name* is not safe to interpolate into a SQL identifier."""
+    if not name or not _SAFE_ID_RE.match(name):
+        raise ValueError(
+            f"Invalid {label} '{name}': only letters, digits, underscores, "
+            "hyphens, and spaces are permitted."
+        )
 
 
 class MssqlError(RuntimeError):
@@ -67,20 +81,20 @@ class MssqlAdapter(DbAdapter):
         finally:
             conn.close()
 
-    def _query_col(self, sql: str, dbname: str = "master") -> list[str]:
+    def _query_col(self, sql: str, params: tuple = (), dbname: str = "master") -> list[str]:
         conn = self._connect(dbname)
         try:
             with conn.cursor() as cur:
-                cur.execute(sql)
+                cur.execute(sql, params)
                 return [str(row[0]) for row in cur.fetchall()]
         finally:
             conn.close()
 
-    def _query_one(self, sql: str, dbname: str = "master") -> str:
+    def _query_one(self, sql: str, params: tuple = (), dbname: str = "master") -> str:
         conn = self._connect(dbname)
         try:
             with conn.cursor() as cur:
-                cur.execute(sql)
+                cur.execute(sql, params)
                 row = cur.fetchone()
                 return str(row[0]) if row else ""
         finally:
@@ -134,6 +148,7 @@ class MssqlAdapter(DbAdapter):
         Run T-SQL BACKUP DATABASE writing to the container/host backup directory,
         then copy the .bak to *out_file* on the host.
         """
+        _validate_identifier(dbname, "database name")
         cfg = self._cfg
         bak_name = out_file.stem + ".bak"
 
@@ -177,6 +192,7 @@ class MssqlAdapter(DbAdapter):
         """
         Copy the .bak into the container (Docker mode), then run RESTORE DATABASE.
         """
+        _validate_identifier(dbname, "database name")
         cfg = self._cfg
 
         if cfg.use_docker:
@@ -208,8 +224,9 @@ class MssqlAdapter(DbAdapter):
     def get_db_size(self, dbname: str) -> str:
         try:
             val = self._query_one(
-                f"SELECT CAST(SUM(size * 8.0 / 1024) AS DECIMAL(10,1)) "
-                f"FROM sys.master_files WHERE DB_NAME(database_id) = '{dbname}'",
+                "SELECT CAST(SUM(size * 8.0 / 1024) AS DECIMAL(10,1)) "
+                "FROM sys.master_files WHERE DB_NAME(database_id) = %s",
+                (dbname,),
                 "master",
             )
             return f"{val} MB" if val else "?"
@@ -231,22 +248,26 @@ class MssqlAdapter(DbAdapter):
 
     def db_exists(self, dbname: str) -> bool:
         val = self._query_one(
-            f"SELECT COUNT(*) FROM sys.databases WHERE name = '{dbname}'"
+            "SELECT COUNT(*) FROM sys.databases WHERE name = %s",
+            (dbname,),
         )
         return val == "1"
 
     def drop_db(self, dbname: str) -> None:
+        _validate_identifier(dbname, "database name")
         self.terminate_connections(dbname)
         self._execute(f"DROP DATABASE [{dbname}]", "master")
 
     def create_db(self, dbname: str, owner: str | None = None) -> None:
+        _validate_identifier(dbname, "database name")
         self._execute(f"CREATE DATABASE [{dbname}]", "master")
 
     def terminate_connections(self, dbname: str) -> int:
+        _validate_identifier(dbname, "database name")
         sql = (
             f"DECLARE @sql NVARCHAR(MAX) = ''; "
             f"SELECT @sql = @sql + 'KILL ' + CAST(spid AS NVARCHAR) + '; ' "
-            f"FROM sys.sysprocesses WHERE dbid = DB_ID('{dbname}') AND spid <> @@SPID; "
+            f"FROM sys.sysprocesses WHERE dbid = DB_ID(N'{dbname}') AND spid <> @@SPID; "
             f"EXEC sp_executesql @sql;"
         )
         try:

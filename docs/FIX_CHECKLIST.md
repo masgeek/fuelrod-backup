@@ -14,26 +14,26 @@ Issues identified by code review. Ordered by priority.
 
 ## Security
 
-- [ ] **`adapters/mssql.py` — SQL injection in multiple methods**
+- [x] **`adapters/mssql.py` — SQL injection in multiple methods**
   - Affected: `db_exists`, `get_db_size`, `terminate_connections`, `drop_db`, `backup_db`, `restore_db`
   - Use parameterised queries for `SELECT`/`COUNT` statements
   - For DDL (`BACKUP`/`RESTORE`/`DROP`/`CREATE`) which cannot be parameterised: validate `dbname` against `[A-Za-z0-9_\-]` before interpolating
 
-- [ ] **`adapters/mariadb.py:278` — SQL injection in `terminate_connections`**
+- [x] **`adapters/mariadb.py:278` — SQL injection in `terminate_connections`**
   - `dbname` is interpolated into `SELECT ID FROM information_schema.PROCESSLIST WHERE DB = '{dbname}'`
   - Pass `dbname` via the `params` tuple instead (already supported by `_query_col` elsewhere in the file)
   - Also audit `drop_db`/`create_db` backtick quoting — still vulnerable to names containing a backtick
 
-- [ ] **`restore.py:461` — Full host environment leaked to Docker subprocess**
+- [x] **`restore.py:461` — Full host environment leaked to Docker subprocess**
   - `env = None` causes `subprocess.run` to inherit the entire parent environment
   - Replace with `env={}` or `env={"PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")}`
   - Also audit `runner.py:149,157` for the same pattern
 
-- [ ] **`n8n_restore.py:288` — Path traversal via `tarfile.extractall`**
+- [x] **`n8n_restore.py:288` — Path traversal via `tarfile.extractall`**
   - Add `filter='data'` argument (Python 3.12+): `tf.extractall(temp_dir, filter='data')`
   - Prevents `../` archive entries from escaping the temp directory
 
-- [ ] **`cli.py:312` — `.backup` config file written without restricted permissions**
+- [x] **`cli.py:312` — `.backup` config file written without restricted permissions**
   - Add `output.chmod(0o600)` after writing the config file
   - Emit a warning that the file contains a plaintext credential
 

@@ -349,8 +349,13 @@ def init_config(
         ]
 
     output.write_text("\n".join(lines), encoding="utf-8")
+    try:
+        output.chmod(0o600)
+    except OSError:
+        pass  # Windows does not support Unix file permissions
     verb = "updated" if updating else "written"
     console.print(f"\n[bold green]✓[/] Config {verb}: [bold]{output}[/]")
+    console.print(f"  [yellow]Note:[/] This file contains a plaintext password — keep it private.")
     console.print(f"\n  Verify with: [bold]fuelrod-backup test --config {output}[/]\n")
 
 

@@ -286,7 +286,7 @@ def _execute_restore(
         # Step 4 — Extract backup to temp dir (host-side)
         console.print(f"  Extracting [bold]{backup_file.name}[/] → [dim]{temp_dir}[/]...")
         with tarfile.open(backup_file) as tf:
-            tf.extractall(temp_dir)
+            tf.extractall(temp_dir, filter="data")
 
         # Step 5 — Determine source dir
         temp_snapshot = temp_dir / "temp_snapshot"

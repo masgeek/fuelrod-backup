@@ -439,7 +439,8 @@ def _execute_pg_restore(
                  cfg.pg_restore_cmd]
                 + base_args
         )
-        env = None
+        # Minimal env — password already injected via -e; don't leak host secrets.
+        env = {"PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")}
     else:
         cmd = [cfg.pg_restore_cmd] + base_args
         env = os.environ.copy()

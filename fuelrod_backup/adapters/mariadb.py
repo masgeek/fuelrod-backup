@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import gzip
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -19,6 +20,19 @@ from pathlib import Path
 
 from ..config import Config
 from .base import DbAdapter
+
+# Identifiers used in DDL (DROP/CREATE DATABASE) cannot be parameterised.
+# Validate them against a safe allowlist before interpolating.
+_SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_\- ]+$")
+
+
+def _validate_identifier(name: str, label: str = "identifier") -> None:
+    """Raise ValueError if *name* is not safe to interpolate into a SQL identifier."""
+    if not name or not _SAFE_ID_RE.match(name):
+        raise ValueError(
+            f"Invalid {label} '{name}': only letters, digits, underscores, "
+            "hyphens, and spaces are permitted."
+        )
 
 
 class MariaDbError(RuntimeError):
@@ -64,11 +78,11 @@ class MariaDbAdapter(DbAdapter):
         except pymysql.err.OperationalError as exc:
             raise MariaDbError(_classify_mysql_error(exc, cfg)) from exc
 
-    def _query_col(self, sql: str, dbname: str = "") -> list[str]:
+    def _query_col(self, sql: str, params: tuple = (), dbname: str = "") -> list[str]:
         conn = self._connect(dbname)
         try:
             with conn.cursor() as cur:
-                cur.execute(sql)
+                cur.execute(sql, params)
                 return [str(row[0]) for row in cur.fetchall()]
         finally:
             conn.close()
@@ -265,9 +279,11 @@ class MariaDbAdapter(DbAdapter):
         return dbname in self.list_databases()
 
     def drop_db(self, dbname: str) -> None:
+        _validate_identifier(dbname, "database name")
         self._execute(f"DROP DATABASE IF EXISTS `{dbname}`")
 
     def create_db(self, dbname: str, owner: str | None = None) -> None:
+        _validate_identifier(dbname, "database name")
         self._execute(
             f"CREATE DATABASE IF NOT EXISTS `{dbname}` "
             "CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
@@ -276,7 +292,8 @@ class MariaDbAdapter(DbAdapter):
     def terminate_connections(self, dbname: str) -> int:
         try:
             threads = self._query_col(
-                f"SELECT ID FROM information_schema.PROCESSLIST WHERE DB = '{dbname}'"
+                "SELECT ID FROM information_schema.PROCESSLIST WHERE DB = %s",
+                (dbname,),
             )
             conn = self._connect()
             try:
@@ -284,7 +301,7 @@ class MariaDbAdapter(DbAdapter):
                 with conn.cursor() as cur:
                     for tid in threads:
                         try:
-                            cur.execute(f"KILL {tid}")
+                            cur.execute("KILL %s", (int(tid),))
                             killed += 1
                         except Exception:
                             pass
