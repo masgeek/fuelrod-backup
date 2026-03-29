@@ -45,6 +45,20 @@ def _human_size(path: Path) -> str:
 #  Container checks and volume introspection
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _ensure_alpine_image() -> None:
+    """Warn (and offer to pull) if the alpine image is not locally cached."""
+    result = subprocess.run(
+        ["docker", "image", "inspect", "alpine"],
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        console.print(
+            "  [yellow]WARN:[/] The [bold]alpine[/] image is not cached locally. "
+            "Docker will pull it now — this may take a moment on a slow connection."
+        )
+        subprocess.run(["docker", "pull", "alpine"], check=True)
+
+
 def _is_container_running(service: str) -> bool:
     """Return True if a container with the given name is in running state."""
     result = subprocess.run(
@@ -248,6 +262,8 @@ def run_n8n_backup(
         _die("No services to back up (all are skipped or the list is empty).")
 
     console.print(Panel("[bold cyan]n8n Volume Backup[/]", expand=False))
+
+    _ensure_alpine_image()
 
     if interactive:
         # Show services table

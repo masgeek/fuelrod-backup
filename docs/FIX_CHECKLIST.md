@@ -63,10 +63,10 @@ Issues identified by code review. Ordered by priority.
 - [x] **`backup.py:188–193` — Empty directories left after retention cleanup**
   - After pruning all files in a `db_dir/dbname/` folder, remove the empty directory
 
-- [ ] **`n8n_backup.py` — `alpine` image pulled silently on each backup**
+- [x] **`n8n_backup.py` — `alpine` image pulled silently on each backup**
   - Three `docker run --rm alpine` calls per backup with no local image check
   - Run `docker image inspect alpine` once at the start and warn if a pull is needed
 
-- [ ] **`adapters/mariadb.py` — `_query_col` lacks a `params` argument**
+- [x] **`adapters/mariadb.py` — `_query_col` lacks a `params` argument**
   - Inconsistent with the PostgreSQL equivalent in `runner.py`
   - Add `params` support to prevent future callers from bypassing parameterisation
