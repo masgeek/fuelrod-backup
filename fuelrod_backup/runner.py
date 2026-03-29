@@ -35,17 +35,17 @@ def _classify_pg_error(exc: psycopg.Error, cfg: Config) -> PgError:
     """Turn a psycopg exception into a human-readable PgError."""
     msg = str(exc).lower()
     if "password authentication failed" in msg:
-        return PgError(f"Wrong password for user '{cfg.user}'. Check PG_PASSWORD in your config.")
+        return PgError(f"Wrong password for user '{cfg.user}'. Check DB_PASSWORD in your config.")
     if "role" in msg and "does not exist" in msg:
-        return PgError(f"User '{cfg.user}' does not exist. Check PG_USERNAME in your config.")
+        return PgError(f"User '{cfg.user}' does not exist. Check DB_USERNAME in your config.")
     if "pg_hba.conf" in msg:
         return PgError(f"Connection blocked by pg_hba.conf for '{cfg.user}'.")
     if "connection refused" in msg or "could not connect" in msg:
         return PgError(f"Connection refused at {cfg.host}:{cfg.port}. Is PostgreSQL running?")
     if "no route to host" in msg or "network unreachable" in msg:
-        return PgError(f"Network error reaching {cfg.host}:{cfg.port}. Check PG_HOST.")
+        return PgError(f"Network error reaching {cfg.host}:{cfg.port}. Check DB_HOST.")
     if "could not translate host name" in msg:
-        return PgError(f"Hostname '{cfg.host}' not resolvable. Check PG_HOST.")
+        return PgError(f"Hostname '{cfg.host}' not resolvable. Check DB_HOST.")
     if "ssl" in msg:
         return PgError("SSL negotiation failed. Try PGSSLMODE=disable in your config.")
     return PgError(str(exc))

@@ -1,0 +1,34 @@
+# fuelrod-backup example config
+# Copy this file to .backup and customize values.
+
+# Engine: postgres | mariadb | mssql
+DB_TYPE=postgres
+
+# Connection
+DB_USERNAME=postgres
+DB_PASSWORD=change_me
+DB_HOST=127.0.0.1
+DB_PORT=5432
+
+# Docker mode
+USE_DOCKER=true
+SERVICE=postgres
+
+# Storage and retention
+BASE_DIR=./db-backup
+COMPRESS_FILE=true
+KEEP_DAYS=7
+
+# Timeout
+CONNECTION_TIMEOUT=30
+
+# PostgreSQL commands
+PG_DUMP_CMD=pg_dump
+PG_RESTORE_CMD=pg_restore
+
+# MariaDB commands
+MYSQL_DUMP_CMD=mariadb-dump
+MYSQL_CMD=mysql
+
+# MSSQL backup location inside container
+MSSQL_BACKUP_DIR=/var/opt/mssql/backups

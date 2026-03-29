@@ -222,18 +222,18 @@ def init_config(
         host, port = ex_host, ex_port
     else:
         service = ex_service
-        host = q.text("Host (PG_HOST)", default=ex_host).ask() or ex_host
-        port = q.text("Port (PG_PORT)", default=ex_port).ask() or ex_port
+        host = q.text("Host (DB_HOST)", default=ex_host).ask() or ex_host
+        port = q.text("Port (DB_PORT)", default=ex_port).ask() or ex_port
 
     # ── Credentials ────────────────────────────────────────────────
     console.print()
     console.rule("[bold cyan]Credentials[/]")
-    username = q.text("Username (PG_USERNAME)", default=ex_user).ask() or ex_user
+    username = q.text("Username (DB_USERNAME)", default=ex_user).ask() or ex_user
     if updating and ex_pass:
         change_pass = q.confirm("Change password? (current password is set)", default=False).ask()
-        password = q.password("New password (PG_PASSWORD)").ask() or ex_pass if change_pass else ex_pass
+        password = q.password("New password (DB_PASSWORD)").ask() or ex_pass if change_pass else ex_pass
     else:
-        password = q.password("Password (PG_PASSWORD)").ask() or ex_pass
+        password = q.password("Password (DB_PASSWORD)").ask() or ex_pass
 
     # ── Backup storage ─────────────────────────────────────────────
     console.print()
@@ -308,10 +308,10 @@ def init_config(
         f"DB_TYPE={db_type}",
         "",
         "# ── Connection ──────────────────────────────────────────────────",
-        f"PG_USERNAME={username}",
-        f"PG_PASSWORD={password}",
-        f"PG_HOST={host}",
-        f"PG_PORT={port}",
+        f"DB_USERNAME={username}",
+        f"DB_PASSWORD={password}",
+        f"DB_HOST={host}",
+        f"DB_PORT={port}",
         "",
         "# ── Docker ──────────────────────────────────────────────────────",
         f"USE_DOCKER={'true' if use_docker else 'false'}",

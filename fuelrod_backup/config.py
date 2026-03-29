@@ -162,9 +162,9 @@ def load_config(config_file: Path | None = None) -> Config:
     else:
         _default_user, _default_port, _default_service = "postgres", "5432", "postgres"
 
-    cfg.user = _get("PG_USERNAME", _default_user)
-    cfg.password = _get("PG_PASSWORD", "")
-    cfg.host = _get("PG_HOST", "127.0.0.1")
+    cfg.user = _get("DB_USERNAME", _default_user)
+    cfg.password = _get("DB_PASSWORD", "")
+    cfg.host = _get("DB_HOST", "127.0.0.1")
     cfg.service = _get("SERVICE", _default_service)
     cfg.use_docker = _get("USE_DOCKER", "true").strip().lower() in ("true", "1", "yes")
     cfg.compress = _get("COMPRESS_FILE", "false").strip().lower() in ("true", "1", "yes")
@@ -185,7 +185,7 @@ def load_config(config_file: Path | None = None) -> Config:
     cfg.mssql_backup_dir = _get("MSSQL_BACKUP_DIR", "/var/opt/mssql/backups")
 
     try:
-        cfg.port = int(_get("PG_PORT", _default_port))
+        cfg.port = int(_get("DB_PORT", _default_port))
     except ValueError:
         cfg.port = int(_default_port)
 

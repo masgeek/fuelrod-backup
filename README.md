@@ -1,4 +1,4 @@
-# fuelrod-backup
+﻿# fuelrod-backup
 
 Interactive backup and restore CLI for PostgreSQL, MariaDB/MySQL, and Microsoft SQL Server.
 
@@ -48,6 +48,13 @@ fuelrod-backup backup
 ```bash
 fuelrod-backup restore
 ```
+
+## Documentation
+
+- [Configuration Reference](docs/CONFIGURATION.md)
+- [Architecture and Workflows](docs/ARCHITECTURE.md)
+- [Code Review Notes](docs/CODE_REVIEW.md)
+- Example config: [`.backup.example`](.backup.example)
 
 ## CLI Commands
 
@@ -103,7 +110,7 @@ Directories searched:
 ### Main keys
 
 - `DB_TYPE=postgres|mariadb|mssql`
-- `PG_USERNAME`, `PG_PASSWORD`, `PG_HOST`, `PG_PORT`
+- `DB_USERNAME`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT` 
 - `USE_DOCKER=true|false`
 - `SERVICE=<container-name>`
 - `BASE_DIR=<backup-root>`
@@ -135,3 +142,15 @@ MSSQL-specific:
 ## License
 
 GNU General Public License v3.0 or later. See [LICENSE](LICENSE).
+
+
+## Breaking Change
+
+Connection variables are now engine-agnostic only:
+
+- `DB_USERNAME`
+- `DB_PASSWORD`
+- `DB_HOST`
+- `DB_PORT`
+
+Legacy connection keys (`PG_USERNAME`, `PG_PASSWORD`, `PG_HOST`, `PG_PORT`) are no longer loaded.
