@@ -172,7 +172,8 @@ class PgRunner:
 
         try:
             if dump_file.suffix == ".gz":
-                tmp_plain = Path(tempfile.mktemp(suffix=".dump"))
+                with tempfile.NamedTemporaryFile(suffix=".dump", delete=False) as tmp_file:
+                    tmp_plain = Path(tmp_file.name)
                 with gzip.open(dump_file, "rb") as f_in, tmp_plain.open("wb") as f_out:
                     f_out.write(f_in.read())
                 work_file = tmp_plain

@@ -209,7 +209,8 @@ class MariaDbAdapter(DbAdapter):
 
         try:
             if suffix == ".gz":
-                tmp_sql = Path(tempfile.mktemp(suffix=".sql"))
+                with tempfile.NamedTemporaryFile(suffix=".sql", delete=False) as tmp_file:
+                    tmp_sql = Path(tmp_file.name)
                 with gzip.open(dump_file, "rb") as gz_in, tmp_sql.open("wb") as f_out:
                     shutil.copyfileobj(gz_in, f_out)
                 work_file = tmp_sql
@@ -218,7 +219,8 @@ class MariaDbAdapter(DbAdapter):
                     sql_names = [n for n in zf.namelist() if n.endswith(".sql")]
                     if not sql_names:
                         raise MariaDbError(f"No .sql file found inside {dump_file.name}")
-                    tmp_sql = Path(tempfile.mktemp(suffix=".sql"))
+                    with tempfile.NamedTemporaryFile(suffix=".sql", delete=False) as tmp_file:
+                        tmp_sql = Path(tmp_file.name)
                     with zf.open(sql_names[0]) as src, tmp_sql.open("wb") as dst:
                         shutil.copyfileobj(src, dst)
                 work_file = tmp_sql

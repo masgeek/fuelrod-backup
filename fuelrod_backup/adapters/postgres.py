@@ -88,7 +88,8 @@ class PostgresAdapter(DbAdapter):
 
         cfg = self._cfg
         if dump_file.suffix == ".gz":
-            tmp = Path(tempfile.mktemp(suffix=".dump"))
+            with tempfile.NamedTemporaryFile(suffix=".dump", delete=False) as tmp_file:
+                tmp = Path(tmp_file.name)
             try:
                 with gzip.open(dump_file, "rb") as gz_in, tmp.open("wb") as f_out:
                     shutil.copyfileobj(gz_in, f_out)

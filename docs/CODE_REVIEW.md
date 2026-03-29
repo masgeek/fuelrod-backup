@@ -10,9 +10,8 @@ Review date: 2026-03-29
 4. Error message references were aligned with real options.
 5. `.backup.example` now uses current supported keys.
 6. README and package metadata now match the current multi-engine implementation.
+7. Temporary-file handling now uses secure temporary-file creation instead of `tempfile.mktemp`.
 
 ## Remaining Risks
 
-- Temporary files are created using `tempfile.mktemp` in several restore/adapter paths.
-  Consider replacing with `NamedTemporaryFile` or `mkstemp` for safer temp-file handling.
 - Test coverage is not currently validated in this repository snapshot.

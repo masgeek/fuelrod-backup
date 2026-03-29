@@ -466,7 +466,8 @@ def _execute_pg_restore(
 
     if backup_file.suffix == ".gz":
         console.print("  Backup is gzipped — decompressing to temp file...")
-        tmp = Path(tempfile.mktemp(suffix=".dump"))
+        with tempfile.NamedTemporaryFile(suffix=".dump", delete=False) as tmp_file:
+            tmp = Path(tmp_file.name)
         try:
             with gzip.open(backup_file, "rb") as gz_in, tmp.open("wb") as f_out:
                 shutil.copyfileobj(gz_in, f_out)
