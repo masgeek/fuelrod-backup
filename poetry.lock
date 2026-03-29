@@ -361,6 +361,21 @@ files = [
 prompt_toolkit = ">=2.0,<4.0"
 
 [[package]]
+name = "rclone-python"
+version = "0.1.24"
+description = "A python wrapper for rclone."
+optional = false
+python-versions = ">=3.6"
+groups = ["main"]
+files = [
+    {file = "rclone_python-0.1.24-py3-none-any.whl", hash = "sha256:e229629239fef02b658644057b5f98daebc36460f1abc78f9b076af107b55ba6"},
+    {file = "rclone_python-0.1.24.tar.gz", hash = "sha256:d6d606112121417ed6427eaf489c02ea80240d9cfda8979e37a6ffab5183c012"},
+]
+
+[package.dependencies]
+rich = "*"
+
+[[package]]
 name = "rich"
 version = "14.3.3"
 description = "Render rich text, tables, progress bars, syntax highlighting, markdown and more to the terminal"
@@ -437,4 +452,4 @@ files = [
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.13"
-content-hash = "2186fea4321c71639abe0b597ce196fe9ac26011aec2e3abc70d79e669f9a1b7"
+content-hash = "512debefed18f46651a16852f1458015edd47d61e4fade761422a2a63f5a5197"
