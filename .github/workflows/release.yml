@@ -27,12 +27,22 @@ jobs:
     environment: pypi
 
     steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
       - uses: actions/checkout@v4
         with:
-          # fetch-depth: 0 is required — the tag action needs full commit history
+          # fetch-depth: 0 is required - the tag action needs full commit history
           # and all existing tags to compute the next semver bump correctly.
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # App token allows the version-bump commit to push back to main without
+          # violating branch protection. Requires the app to be granted
+          # "bypass branch protection" under Settings -> Branches -> main rule.
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Fetch tags
         run: git fetch --tags
@@ -59,7 +69,7 @@ jobs:
         id: tag_version
         uses: masgeek/github-tag-action@release
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          github_token: ${{ steps.app-token.outputs.token }}
           tag_prefix: ""
           create_annotated_tag: true
 
@@ -82,7 +92,7 @@ jobs:
       - name: Create GitHub Release
         uses: ncipollo/release-action@v1.21.0
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ steps.app-token.outputs.token }}
           tag: ${{ steps.tag_version.outputs.new_tag }}
           name: Release ${{ steps.tag_version.outputs.new_tag }}
           body: ${{ steps.tag_version.outputs.changelog }}
