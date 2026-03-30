@@ -2,14 +2,14 @@ name: PR Checks
 
 on:
   push:
-    branches: [main, develop]
+    branches: [ main, develop ]
     paths:
       - "fuelrod_backup/**"
       - "tests/**"
       - "pyproject.toml"
       - "poetry.lock"
   pull_request:
-    branches: [main, develop]
+    branches: [ main, develop ]
   workflow_dispatch:
 
 jobs:
@@ -48,11 +48,12 @@ jobs:
 
   test:
     name: Test (Python ${{ matrix.python-version }})
+    needs: [ lint ]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.13"]
+        python-version: [ "3.13" ]
     concurrency:
       group: test-py${{ matrix.python-version }}-${{ github.head_ref || github.ref_name }}
       cancel-in-progress: true
@@ -95,39 +96,39 @@ jobs:
           retention-days: 1
 
   review-pr:
-      runs-on: ubuntu-latest
-      needs: [lint, test]
-      permissions:
-        pull-requests: write
-      steps:
-        - uses: actions/create-github-app-token@v3
-          id: app-token
-          with:
-            app-id: ${{ vars.APP_ID }}
-            private-key: ${{ secrets.APP_PRIVATE_KEY }}
+    runs-on: ubuntu-latest
+    needs: [ lint, test ]
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
 
-        - uses: actions/github-script@v7
-          with:
-            github-token: ${{ steps.app-token.outputs.token }}
-            script: |
-              const prNumber = context.payload.pull_request.number;
-              const lintResult = "${{ needs.lint.result }}";
-              const testResult = "${{ needs.unit-tests.result }}";
-  
-              if (lintResult === 'success' && testResult === 'success') {
-                await github.pulls.createReview({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  pull_number: prNumber,
-                  event: 'APPROVE',
-                  body: '✅ Auto approved after successful checks.'
-                });
-              } else {
-                await github.pulls.createReview({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  pull_number: prNumber,
-                  event: 'REQUEST_CHANGES',
-                  body: `❌ Checks failed. Lint: ${lintResult}, Tests: ${testResult}.`
-                });
-              }
+      - uses: actions/github-script@v7
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            const prNumber = context.payload.pull_request.number;
+            const lintResult = "${{ needs.lint.result }}";
+            const testResult = "${{ needs.unit-tests.result }}";
+            
+            if (lintResult === 'success' && testResult === 'success') {
+              await github.pulls.createReview({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: prNumber,
+                event: 'APPROVE',
+                body: '✅ Auto approved after successful checks.'
+              });
+            } else {
+              await github.pulls.createReview({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: prNumber,
+                event: 'REQUEST_CHANGES',
+                body: `❌ Checks failed. Lint: ${lintResult}, Tests: ${testResult}.`
+              });
+            }
