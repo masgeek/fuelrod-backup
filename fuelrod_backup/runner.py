@@ -381,6 +381,96 @@ class PgRunner:
                         )
                     )
 
+    def remap_schema(self, src: str, dst: str, dbname: str) -> None:
+        """
+        Move all objects from src schema into dst on the target database.
+
+        If dst does not exist: ALTER SCHEMA RENAME is used atomically.
+
+        If dst already exists (e.g. remapping fuelrod into public): each object
+        type is moved with ALTER ... SET SCHEMA, then src is dropped.
+
+        Move order matters:
+          1. Functions/procedures first — triggers reference functions by OID and
+             survive the move automatically; functions must leave src before
+             DROP RESTRICT checks for dependents.
+          2. Tables — triggers follow their table, no extra step needed.
+          3. Sequences — may be owned by table columns; moved after tables.
+          4. Views.
+        """
+        dst_exists = self._query_one(
+            "SELECT COUNT(*) FROM pg_namespace WHERE nspname = %s", (dst,), dbname=dbname
+        ) != "0"
+
+        with self._connect(dbname, autocommit=True) as conn:
+            with conn.cursor() as cur:
+                if not dst_exists:
+                    cur.execute(
+                        pgsql.SQL("ALTER SCHEMA {} RENAME TO {}").format(
+                            pgsql.Identifier(src), pgsql.Identifier(dst)
+                        )
+                    )
+                    return
+
+                # 1. Functions and procedures.
+                # pg_get_function_identity_arguments returns canonical arg types
+                # from pg_catalog — safe to interpolate as literal SQL for the
+                # argument list, which cannot be parameterised.
+                for sig in self._query_col(
+                    "SELECT p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')'"
+                    " FROM pg_proc p"
+                    " JOIN pg_namespace n ON n.oid = p.pronamespace"
+                    " WHERE n.nspname = %s",
+                    (src,), dbname=dbname,
+                ):
+                    paren = sig.index("(")
+                    func_name = sig[:paren]
+                    func_args = sig[paren:]  # e.g. "(integer, text)"
+                    cur.execute(
+                        pgsql.SQL("ALTER ROUTINE {}.{}{} SET SCHEMA {}").format(
+                            pgsql.Identifier(src),
+                            pgsql.Identifier(func_name),
+                            pgsql.SQL(func_args),
+                            pgsql.Identifier(dst),
+                        )
+                    )
+                # 2. Tables (triggers follow their table automatically).
+                for table in self._query_col(
+                    "SELECT tablename FROM pg_tables WHERE schemaname = %s",
+                    (src,), dbname=dbname,
+                ):
+                    cur.execute(
+                        pgsql.SQL("ALTER TABLE {}.{} SET SCHEMA {}").format(
+                            pgsql.Identifier(src), pgsql.Identifier(table), pgsql.Identifier(dst)
+                        )
+                    )
+                # 3. Sequences.
+                for seq in self._query_col(
+                    "SELECT sequencename FROM pg_sequences WHERE schemaname = %s",
+                    (src,), dbname=dbname,
+                ):
+                    cur.execute(
+                        pgsql.SQL("ALTER SEQUENCE {}.{} SET SCHEMA {}").format(
+                            pgsql.Identifier(src), pgsql.Identifier(seq), pgsql.Identifier(dst)
+                        )
+                    )
+                # 4. Views.
+                for view in self._query_col(
+                    "SELECT viewname FROM pg_views WHERE schemaname = %s",
+                    (src,), dbname=dbname,
+                ):
+                    cur.execute(
+                        pgsql.SQL("ALTER VIEW {}.{} SET SCHEMA {}").format(
+                            pgsql.Identifier(src), pgsql.Identifier(view), pgsql.Identifier(dst)
+                        )
+                    )
+                cur.execute(
+                    pgsql.SQL("DROP SCHEMA IF EXISTS {} RESTRICT").format(
+                        pgsql.Identifier(src)
+                    )
+                )
+
+
     def get_table_count(self, dbname: str, schema: str | None = None) -> str:
         """Return count of user tables, optionally filtered to a schema."""
         try:

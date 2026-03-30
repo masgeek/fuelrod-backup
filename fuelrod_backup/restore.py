@@ -288,6 +288,42 @@ def _step_table_selection(toc: str, selected_schemas: list[str]) -> list[str]:
     return table_args
 
 
+def _step_schema_remap(selected_schemas: list[str]) -> dict[str, str]:
+    """
+    Optional step: let the user rename each selected schema on the target.
+
+    Returns a mapping of {original_name: target_name} for schemas that should
+    be renamed after pg_restore completes.  Schemas kept under their original
+    name are omitted from the dict.
+
+    Why post-restore rename: pg_restore has no --target-schema flag, so objects
+    are always restored under the name embedded in the dump.  We rename
+    afterwards using ALTER SCHEMA RENAME (fast, atomic) if the target name is
+    free, or SET SCHEMA on each object if the target already exists (e.g.
+    remapping 'fuelrod' into 'public').
+    """
+    _section("Step 4b — Schema Remapping (optional)")
+    console.print(
+        "  Dump schema(s): "
+        + ", ".join(f"[bold]{s}[/]" for s in selected_schemas)
+    )
+    console.print("  Leave blank to keep each name as-is.\n")
+    mapping: dict[str, str] = {}
+    for schema in selected_schemas:
+        new_name = (
+            questionary.text(f"  Restore '{schema}' as", default=schema).ask() or schema
+        ).strip()
+        if new_name and new_name != schema:
+            mapping[schema] = new_name
+
+    if mapping:
+        for src, dst in mapping.items():
+            console.print(f"  [cyan]{src}[/] → [bold]{dst}[/]")
+    else:
+        console.print("  No remapping — schemas will be restored under their original names.")
+    return mapping
+
+
 def _step_role_analysis(toc: str, adapter) -> list[str]:
     """Step 5 (PG only): find missing roles, offer create / no-owner / ignore."""
     _section("Step 5 — Role Analysis")
@@ -499,6 +535,7 @@ def run_restore(cfg: Config) -> None:
     schema_args: list[str] = []
     table_args: list[str] = []
     role_args: list[str] = []
+    schema_remap: dict[str, str] = {}
     scope_args: list[str] = []
     clean_args: list[str] = []
     jobs = 1
@@ -527,6 +564,8 @@ def run_restore(cfg: Config) -> None:
         if adapter.supports_schemas:
             schema_args, selected_schemas = _step_schema_selection(toc)
             table_args = _step_table_selection(toc, selected_schemas)
+            if selected_schemas:
+                schema_remap = _step_schema_remap(selected_schemas)
 
         if adapter.supports_roles:
             role_args = _step_role_analysis(toc, adapter)
@@ -559,6 +598,9 @@ def run_restore(cfg: Config) -> None:
     console.print(f"  Target DB   : [bold]{target_db}[/]")
     if adapter.supports_schemas:
         console.print(f"  Schemas     : {', '.join(selected_schemas) or 'all'}")
+        if schema_remap:
+            for src, dst in schema_remap.items():
+                console.print(f"  Remap       : [cyan]{src}[/] → [bold]{dst}[/]")
     if adapter.supports_toc:
         console.print(f"  Scope       : {scope_args[0].lstrip('-') if scope_args else 'full'}")
         console.print(f"  Drop first  : {'yes' if clean_args else 'no'}")
@@ -615,14 +657,27 @@ def run_restore(cfg: Config) -> None:
     except Exception as exc:
         _die(f"Restore failed: {exc}")
 
+    # ── Schema remapping (PG only) ────────────────────────────────
+    if adapter.supports_toc and schema_remap:
+        _section("Schema Remapping")
+        for src, dst in schema_remap.items():
+            console.print(f"  [cyan]{src}[/] → [bold]{dst}[/]...")
+            try:
+                adapter.remap_schema(src, dst, target_db)
+                console.print(f"  [green]Done.[/]")
+            except Exception as exc:  # noqa: BLE001
+                console.print(f"  [yellow]WARN:[/] remap failed: {exc}")
+
     # ── Post-restore stats (PG only) ───────────────────────────────
     if adapter.supports_toc:
         _section("Post-Restore Report")
         table_count = adapter.get_table_count(target_db)
         console.print(f"  Tables restored : {table_count}")
         for schema in selected_schemas:
-            cnt = adapter.get_table_count(target_db, schema=schema)
-            console.print(f"    {schema:<28} {cnt} tables")
+            effective = schema_remap.get(schema, schema)
+            cnt = adapter.get_table_count(target_db, schema=effective)
+            label = f"{schema} → {effective}" if schema in schema_remap else schema
+            console.print(f"    {label:<36} {cnt} tables")
 
     console.print()
     console.print(Panel(f"[bold green]RESTORE COMPLETE → {target_db}[/]", expand=False))
