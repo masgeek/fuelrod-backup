@@ -113,26 +113,33 @@ jobs:
           github-token: ${{ steps.app-token.outputs.token }}
           script: |
             const conclusion = context.payload.workflow_run.conclusion;
-            const pr = context.payload.workflow_run.pull_requests[0];
+            const headSha = context.payload.workflow_run.head_sha;
+      
+            // Find the PR by commit SHA since pull_requests[] is often empty
+            const { data: prs } = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              head: `${context.payload.workflow_run.head_repository.owner.login}:${context.payload.workflow_run.head_branch}`
+            });
+      
+            const pr = prs.find(p => p.head.sha === headSha);
             if (!pr) {
-              core.info("No PR associated with this workflow run.");
+              core.warning(`No open PR found for SHA ${headSha}`);
               return;
             }
       
-            if (conclusion === 'success') {
-              await github.rest.pulls.createReview({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                pull_number: pr.number,
-                event: 'APPROVE',
-                body: '✅ Auto approved after successful Lint and Unit Tests.'
-              });
-            } else {
-              await github.rest.pulls.createReview({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                pull_number: pr.number,
-                event: 'REQUEST_CHANGES',
-                body: `❌ Checks failed (${conclusion}). Please fix before merging.`
-              });
-            }
+            const event = conclusion === 'success' ? 'APPROVE' : 'REQUEST_CHANGES';
+            const body = conclusion === 'success'
+              ? '✅ Auto approved after successful Lint and Unit Tests.'
+              : `❌ Checks failed (${conclusion}). Please fix before merging.`;
+      
+            await github.rest.pulls.createReview({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pr.number,
+              event,
+              body
+            });
+      
+            core.info(`${event} review posted on PR #${pr.number}`);
