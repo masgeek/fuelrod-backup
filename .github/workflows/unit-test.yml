@@ -39,7 +39,7 @@ jobs:
           virtualenvs-in-project: true
 
       - name: Cache virtualenv
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .venv
           # cache-read-only: feature branches read from cache but never write,
