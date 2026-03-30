@@ -19,27 +19,40 @@ jobs:
     if: |
       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
       (github.event.pull_request.merged == true)
-    # Never cancel a release mid-flight — partial releases are harder to recover from
-    # than waiting for a duplicate run to be skipped by the tag action.
+    # Fixed group (not branch-scoped) so ALL release runs are serialised globally.
+    # Two PRs merged in quick succession will queue, not race — the second run will
+    # see the tag created by the first and compute the correct next version.
+    # cancel-in-progress: false because a partial release (tagged but not published)
+    # is harder to recover from than waiting for the queue to drain.
     concurrency:
-      group: release-${{ github.head_ref || github.ref_name }}
+      group: release
       cancel-in-progress: false
     environment: pypi
 
     steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
       - uses: actions/checkout@v4
         with:
-          # fetch-depth: 0 is required — the tag action needs full commit history
+          # fetch-depth: 0 is required - the tag action needs full commit history
           # and all existing tags to compute the next semver bump correctly.
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # App token allows the version-bump commit to push back to main without
+          # violating branch protection. Requires the app to be granted
+          # "bypass branch protection" under Settings -> Branches -> main rule.
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Fetch tags
         run: git fetch --tags
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: "3.14"
 
       - name: Install Poetry
         uses: snok/install-poetry@v1
@@ -59,7 +72,7 @@ jobs:
         id: tag_version
         uses: masgeek/github-tag-action@release
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          github_token: ${{ steps.app-token.outputs.token }}
           tag_prefix: ""
           create_annotated_tag: true
 
@@ -73,6 +86,14 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add pyproject.toml
+
+          # Stash the version bump, rebase on latest main, then reapply.
+          # Guards against main moving between our checkout and this push
+          # (e.g. a chore commit from a preceding serialised release run).
+          git stash push -m "version bump"
+          git pull --rebase origin main
+          git stash pop
+
           git commit -m "chore: release ${{ steps.tag_version.outputs.new_tag }}"
           git push origin HEAD:main
 
@@ -80,9 +101,9 @@ jobs:
         run: poetry build
 
       - name: Create GitHub Release
-        uses: ncipollo/release-action@v1.15.0
+        uses: ncipollo/release-action@v1.21.0
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ steps.app-token.outputs.token }}
           tag: ${{ steps.tag_version.outputs.new_tag }}
           name: Release ${{ steps.tag_version.outputs.new_tag }}
           body: ${{ steps.tag_version.outputs.changelog }}
