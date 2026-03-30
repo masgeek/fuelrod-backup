@@ -2,7 +2,7 @@ name: PR Checks
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ "**" ]
     paths:
       - "fuelrod_backup/**"
       - "tests/**"
