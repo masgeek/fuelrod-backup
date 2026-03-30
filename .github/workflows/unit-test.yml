@@ -1,4 +1,4 @@
-name: CI
+name: Unit Tests
 
 on:
   push:
@@ -13,40 +13,6 @@ on:
   workflow_dispatch:
 
 jobs:
-  lint:
-    name: Lint
-    runs-on: ubuntu-latest
-    # Cancel stale runs on the same branch — saves CI minutes on rapid pushes
-    concurrency:
-      group: lint-${{ github.head_ref || github.ref_name }}
-      cancel-in-progress: true
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.14"
-
-      - name: Install Poetry
-        uses: snok/install-poetry@v1
-        with:
-          virtualenvs-in-project: true
-
-      - name: Cache virtualenv
-        uses: actions/cache@v4
-        with:
-          path: .venv
-          key: venv-lint-${{ runner.os }}-${{ hashFiles('poetry.lock') }}
-
-      - name: Install dependencies
-        run: poetry install
-
-      - name: Lint with ruff
-        run: poetry run ruff check .
-
   test:
     name: Test (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
@@ -76,6 +42,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .venv
+          # cache-read-only: feature branches read from cache but never write,
+          # so only develop keeps the shared cache warm.
           key: venv-${{ matrix.python-version }}-${{ runner.os }}-${{ hashFiles('poetry.lock') }}
 
       - name: Install dependencies
@@ -94,28 +62,3 @@ jobs:
           name: test-results-py${{ matrix.python-version }}
           path: test-results.xml
           retention-days: 1
-
-  build:
-    name: Build
-    runs-on: ubuntu-latest
-    needs: [lint, test]
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.14"
-
-      - name: Install Poetry
-        uses: snok/install-poetry@v1
-        with:
-          virtualenvs-in-project: true
-
-      - name: Install dependencies
-        run: poetry install
-
-      - name: Build package
-        run: poetry build

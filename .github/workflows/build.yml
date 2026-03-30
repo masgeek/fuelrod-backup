@@ -1,0 +1,52 @@
+name: Build
+
+on:
+  # Runs automatically after Unit Tests pass — cross-workflow equivalent of `needs`.
+  # workflow_run only fires on the default branch and any branches listed below.
+  workflow_run:
+    workflows: ["Unit Tests"]
+    types: [completed]
+    branches: [main, develop]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build package
+    runs-on: ubuntu-latest
+    # Skip if the upstream test run failed or was cancelled.
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    concurrency:
+      group: build-${{ github.event.workflow_run.head_branch || github.ref_name }}
+      cancel-in-progress: true
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Use the commit that triggered the upstream test run, not HEAD,
+          # so the build artifact matches exactly what was tested.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          virtualenvs-in-project: true
+
+      - name: Install dependencies
+        run: poetry install
+
+      - name: Build package
+        run: poetry build
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          retention-days: 7
