@@ -4,7 +4,7 @@ on:
   # Runs automatically after Unit Tests pass — cross-workflow equivalent of `needs`.
   # workflow_run only fires on the default branch and any branches listed below.
   workflow_run:
-    workflows: ["Unit Tests"]
+    workflows: ["PR Checks"]
     types: [completed]
     branches: [main, develop]
   workflow_dispatch:

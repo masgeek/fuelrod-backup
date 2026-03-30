@@ -28,4 +28,4 @@ jobs:
           old_string: "**Write your description here**"
           body: "${{ github.event.head_commit.message }}"
           new_string: "${{ github.event.head_commit.message }}"
-          get_diff: false
+          get_diff: true
