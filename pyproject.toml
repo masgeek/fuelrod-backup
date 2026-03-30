@@ -13,16 +13,20 @@ documentation = "https://github.com/masgeek/fuelrod-backup#readme"
 keywords = ["postgresql", "postgres", "mariadb", "mysql", "mssql", "backup", "restore", "docker", "cli", "devops"]
 
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Environment :: Console",
     "Intended Audience :: Developers",
     "Intended Audience :: System Administrators",
+    "Intended Audience :: Information Technology",
     "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: Implementation :: CPython",
     "Topic :: Database",
     "Topic :: System :: Archiving :: Backup",
     "Topic :: Utilities",
+    "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 
 requires-python = ">=3.13"
@@ -57,16 +61,16 @@ line-length = 120
 
 [tool.ruff.lint]
 select = [
-    "E",   # pycodestyle errors
-    "W",   # pycodestyle warnings
-    "F",   # pyflakes
-    "I",   # isort
-    "UP",  # pyupgrade
-    "S",   # flake8-bandit (security)
+    "E", # pycodestyle errors
+    "W", # pycodestyle warnings
+    "F", # pyflakes
+    "I", # isort
+    "UP", # pyupgrade
+    "S", # flake8-bandit (security)
 ]
 ignore = [
-    "S603",  # subprocess call — reviewed; list form is used throughout (no shell=True)
-    "S607",  # partial executable path — docker/pg_dump/mysqldump are expected on PATH
+    "S603", # subprocess call — reviewed; list form is used throughout (no shell=True)
+    "S607", # partial executable path — docker/pg_dump/mysqldump are expected on PATH
 ]
 
 [tool.ruff.lint.per-file-ignores]

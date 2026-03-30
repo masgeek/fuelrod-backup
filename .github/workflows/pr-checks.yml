@@ -1,25 +1,59 @@
-name: Unit Tests
+name: PR Checks
 
 on:
   push:
-    branches: [main, develop]
+    branches: [ main, develop ]
     paths:
-      - 'fuelrod_backup/**'
-      - 'tests/**'
-      - 'pyproject.toml'
-      - 'poetry.lock'
+      - "fuelrod_backup/**"
+      - "tests/**"
+      - "pyproject.toml"
+      - "poetry.lock"
   pull_request:
-    branches: [main, develop]
+    branches: [ main, develop ]
   workflow_dispatch:
 
 jobs:
+  lint:
+    name: Ruff
+    runs-on: ubuntu-latest
+    concurrency:
+      group: lint-${{ github.head_ref || github.ref_name }}
+      cancel-in-progress: true
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          virtualenvs-in-project: true
+
+      - name: Cache virtualenv
+        uses: actions/cache@v5
+        with:
+          path: .venv
+          key: venv-lint-${{ runner.os }}-${{ hashFiles('poetry.lock') }}
+
+      - name: Install dependencies
+        run: poetry install
+
+      - name: Lint with ruff
+        run: poetry run ruff check .
+
   test:
     name: Test (Python ${{ matrix.python-version }})
+    needs: [ lint ]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.13"]
+        python-version: [ "3.13" ]
     concurrency:
       group: test-py${{ matrix.python-version }}-${{ github.head_ref || github.ref_name }}
       cancel-in-progress: true
@@ -42,8 +76,6 @@ jobs:
         uses: actions/cache@v5
         with:
           path: .venv
-          # cache-read-only: feature branches read from cache but never write,
-          # so only develop keeps the shared cache warm.
           key: venv-${{ matrix.python-version }}-${{ runner.os }}-${{ hashFiles('poetry.lock') }}
 
       - name: Install dependencies
