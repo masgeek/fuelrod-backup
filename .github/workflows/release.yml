@@ -19,10 +19,13 @@ jobs:
     if: |
       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
       (github.event.pull_request.merged == true)
-    # Never cancel a release mid-flight — partial releases are harder to recover from
-    # than waiting for a duplicate run to be skipped by the tag action.
+    # Fixed group (not branch-scoped) so ALL release runs are serialised globally.
+    # Two PRs merged in quick succession will queue, not race — the second run will
+    # see the tag created by the first and compute the correct next version.
+    # cancel-in-progress: false because a partial release (tagged but not published)
+    # is harder to recover from than waiting for the queue to drain.
     concurrency:
-      group: release-${{ github.head_ref || github.ref_name }}
+      group: release
       cancel-in-progress: false
     environment: pypi
 
@@ -83,6 +86,14 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add pyproject.toml
+
+          # Stash the version bump, rebase on latest main, then reapply.
+          # Guards against main moving between our checkout and this push
+          # (e.g. a chore commit from a preceding serialised release run).
+          git stash push -m "version bump"
+          git pull --rebase origin main
+          git stash pop
+
           git commit -m "chore: release ${{ steps.tag_version.outputs.new_tag }}"
           git push origin HEAD:main
 
