@@ -664,7 +664,7 @@ def run_restore(cfg: Config) -> None:
             console.print(f"  [cyan]{src}[/] → [bold]{dst}[/]...")
             try:
                 adapter.remap_schema(src, dst, target_db)
-                console.print(f"  [green]Done.[/]")
+                console.print("  [green]Done.[/]")
             except Exception as exc:  # noqa: BLE001
                 console.print(f"  [yellow]WARN:[/] remap failed: {exc}")
 
