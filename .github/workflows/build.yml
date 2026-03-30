@@ -22,7 +22,7 @@ jobs:
       cancel-in-progress: true
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           # Use the commit that triggered the upstream test run, not HEAD,
           # so the build artifact matches exactly what was tested.
