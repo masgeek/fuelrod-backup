@@ -1,0 +1,35 @@
+name: PR to Develop
+
+on:
+  workflow_dispatch:
+#  push:
+#    branches-ignore:
+#      - main
+#      - develop
+
+jobs:
+  pr-to-develop:
+    name: Open PR → develop
+    runs-on: ubuntu-latest
+    # Extra safety — never run this from main or develop itself
+    if: github.ref != 'refs/heads/main' && github.ref != 'refs/heads/develop'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create pull request to develop
+        uses: devops-infra/action-pull-request@v0.6.1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          title: "Merge ${{ github.ref_name }} into develop"
+          reviewer: ${{ github.actor }}
+          assignee: ${{ github.actor }}
+          target_branch: develop
+          label: feature
+          old_string: "**Write your description here**"
+          new_string: "${{ github.event.head_commit.message }}"
+          body: "${{ github.event.head_commit.message }}"
+          get_diff: false
