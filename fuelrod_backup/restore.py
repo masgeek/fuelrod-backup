@@ -61,30 +61,38 @@ def _split_toc_line(parts: list[str]) -> tuple[str, str, str, str] | None:
     """
     Parse a non-comment TOC line into (obj_type, schema, name, owner).
 
-    TOC format: id; oid flags TYPE [subtype] SCHEMA NAME OWNER
+    TOC format: id; oid flags TYPE [subtype] SCHEMA [TABLE] NAME OWNER
 
-    Compound types (e.g. TABLE DATA, FK CONSTRAINT, SEQUENCE SET, DEFAULT ACL,
-    SEQUENCE OWNED BY) have a keyword in the parts[4] slot that is NOT a schema.
-    Detect these via _TYPE_KEYWORDS and shift the schema/name/owner fields right.
+    The owner is always the last token and the name is always second-to-last.
+    Anchoring from the end correctly handles object types whose tag includes a
+    table reference before the object name (CONSTRAINT, FK CONSTRAINT, INDEX,
+    DEFAULT, TRIGGER, RULE) -- those extra tokens are simply ignored between
+    the schema position and parts[-2].
+
+    Compound types (TABLE DATA, FK CONSTRAINT, SEQUENCE OWNED BY, ...) have a
+    keyword in parts[4] that is not a schema name; detect these via
+    _TYPE_KEYWORDS to find the correct schema position.
     """
-    if len(parts) < 6:
+    # Minimum valid line: id oid oid TYPE schema name owner = 7 tokens.
+    if len(parts) < 7:
         return None
+
+    # Owner and name are always the last two tokens, regardless of how many
+    # table-reference tokens appear between the schema and the object name.
+    owner = parts[-1]
+    name = parts[-2]
+
     if len(parts) > 4 and parts[4] in _TYPE_KEYWORDS:
         if len(parts) > 5 and parts[5] == "BY":
             obj_type = f"{parts[3]} {parts[4]} BY"
             schema = parts[6] if len(parts) > 6 else "-"
-            name = parts[7] if len(parts) > 7 else "-"
-            owner = parts[8] if len(parts) > 8 else "-"
         else:
             obj_type = f"{parts[3]} {parts[4]}"
             schema = parts[5] if len(parts) > 5 else "-"
-            name = parts[6] if len(parts) > 6 else "-"
-            owner = parts[7] if len(parts) > 7 else "-"
     else:
         obj_type = parts[3]
-        schema = parts[4] if len(parts) > 4 else "-"
-        name = parts[5] if len(parts) > 5 else "-"
-        owner = parts[6] if len(parts) > 6 else "-"
+        schema = parts[4]
+
     return obj_type, schema, name, owner
 
 
