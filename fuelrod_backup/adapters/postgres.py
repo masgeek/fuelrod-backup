@@ -141,5 +141,8 @@ class PostgresAdapter(DbAdapter):
     def ensure_schemas(self, dbname: str, schemas: list[str]) -> None:
         self._runner.ensure_schemas(dbname, schemas)
 
+    def remap_schema(self, src: str, dst: str, dbname: str) -> None:
+        self._runner.remap_schema(src, dst, dbname)
+
     def get_table_count(self, dbname: str, schema: str | None = None) -> str:
         return self._runner.get_table_count(dbname, schema)

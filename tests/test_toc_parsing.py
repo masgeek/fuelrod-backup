@@ -25,7 +25,7 @@ SAMPLE_TOC = """\
 6; 1259 201 TABLE app_schema products appuser
 7; 1259 202 TABLE public customers admin_user
 8; 0 200 TABLE DATA public orders appuser
-9; 0 0 FK CONSTRAINT public orders_pkey appuser
+9; 0 0 FK CONSTRAINT public orders orders_pkey appuser
 10; 0 0 SEQUENCE public orders_id_seq appuser
 11; 0 0 SEQUENCE OWNED BY public orders_id_seq appuser
 12; 0 0 ROLE - appuser appuser
@@ -46,6 +46,7 @@ class TestSplitTocLine:
         assert _split_toc_line(parts) == ("TABLE DATA", "public", "orders", "appuser")
 
     def test_compound_fk_constraint(self):
+        # Simplified format (no table name) — still works because owner=parts[-1].
         parts = ["9;", "0", "0", "FK", "CONSTRAINT", "public", "orders_pkey", "appuser"]
         assert _split_toc_line(parts) == ("FK CONSTRAINT", "public", "orders_pkey", "appuser")
 
@@ -64,12 +65,20 @@ class TestSplitTocLine:
     def test_too_few_parts_returns_none(self):
         assert _split_toc_line(["1;", "0", "0", "TABLE", "public"]) is None
 
-    def test_missing_owner_defaults_to_dash(self):
-        # Exactly 6 parts — owner slot is absent
-        parts = ["1;", "0", "0", "TABLE", "public", "orders"]
-        result = _split_toc_line(parts)
-        assert result is not None
-        assert result[3] == "-"  # owner defaults to "-"
+    def test_six_parts_returns_none(self):
+        # 6 parts lacks a separate owner token — below the 7-token minimum.
+        assert _split_toc_line(["1;", "0", "0", "TABLE", "public", "orders"]) is None
+
+    def test_fk_constraint_with_table_name(self):
+        # Real pg_restore format includes the table name between schema and constraint name.
+        # Previously "orders_pkey" landed in the owner slot; real owner "appuser" was lost.
+        parts = ["9;", "0", "0", "FK", "CONSTRAINT", "public", "orders", "orders_pkey", "appuser"]
+        assert _split_toc_line(parts) == ("FK CONSTRAINT", "public", "orders_pkey", "appuser")
+
+    def test_constraint_with_table_name(self):
+        # PRIMARY KEY / CHECK constraints also embed the table name in the tag.
+        parts = ["9;", "2606", "12346", "CONSTRAINT", "public", "orders", "orders_pkey", "appuser"]
+        assert _split_toc_line(parts) == ("CONSTRAINT", "public", "orders_pkey", "appuser")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -181,7 +190,7 @@ class TestParseOwners:
         assert _parse_owners_from_toc("") == []
 
     def test_compound_type_owner_extracted_correctly(self):
-        # TABLE DATA line — owner is at position [7], not [-1].
+        # TABLE DATA line — owner is always parts[-1].
         toc = "8; 0 200 TABLE DATA public orders realowner\n"
         owners = _parse_owners_from_toc(toc)
         assert "realowner" in owners

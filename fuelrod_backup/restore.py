@@ -61,30 +61,38 @@ def _split_toc_line(parts: list[str]) -> tuple[str, str, str, str] | None:
     """
     Parse a non-comment TOC line into (obj_type, schema, name, owner).
 
-    TOC format: id; oid flags TYPE [subtype] SCHEMA NAME OWNER
+    TOC format: id; oid flags TYPE [subtype] SCHEMA [TABLE] NAME OWNER
 
-    Compound types (e.g. TABLE DATA, FK CONSTRAINT, SEQUENCE SET, DEFAULT ACL,
-    SEQUENCE OWNED BY) have a keyword in the parts[4] slot that is NOT a schema.
-    Detect these via _TYPE_KEYWORDS and shift the schema/name/owner fields right.
+    The owner is always the last token and the name is always second-to-last.
+    Anchoring from the end correctly handles object types whose tag includes a
+    table reference before the object name (CONSTRAINT, FK CONSTRAINT, INDEX,
+    DEFAULT, TRIGGER, RULE) -- those extra tokens are simply ignored between
+    the schema position and parts[-2].
+
+    Compound types (TABLE DATA, FK CONSTRAINT, SEQUENCE OWNED BY, ...) have a
+    keyword in parts[4] that is not a schema name; detect these via
+    _TYPE_KEYWORDS to find the correct schema position.
     """
-    if len(parts) < 6:
+    # Minimum valid line: id oid oid TYPE schema name owner = 7 tokens.
+    if len(parts) < 7:
         return None
+
+    # Owner and name are always the last two tokens, regardless of how many
+    # table-reference tokens appear between the schema and the object name.
+    owner = parts[-1]
+    name = parts[-2]
+
     if len(parts) > 4 and parts[4] in _TYPE_KEYWORDS:
         if len(parts) > 5 and parts[5] == "BY":
             obj_type = f"{parts[3]} {parts[4]} BY"
             schema = parts[6] if len(parts) > 6 else "-"
-            name = parts[7] if len(parts) > 7 else "-"
-            owner = parts[8] if len(parts) > 8 else "-"
         else:
             obj_type = f"{parts[3]} {parts[4]}"
             schema = parts[5] if len(parts) > 5 else "-"
-            name = parts[6] if len(parts) > 6 else "-"
-            owner = parts[7] if len(parts) > 7 else "-"
     else:
         obj_type = parts[3]
-        schema = parts[4] if len(parts) > 4 else "-"
-        name = parts[5] if len(parts) > 5 else "-"
-        owner = parts[6] if len(parts) > 6 else "-"
+        schema = parts[4]
+
     return obj_type, schema, name, owner
 
 
@@ -278,6 +286,42 @@ def _step_table_selection(toc: str, selected_schemas: list[str]) -> list[str]:
             table_args += ["-t", entry]
         console.print(f"  Table filter applied: {', '.join(selected)}")
     return table_args
+
+
+def _step_schema_remap(selected_schemas: list[str]) -> dict[str, str]:
+    """
+    Optional step: let the user rename each selected schema on the target.
+
+    Returns a mapping of {original_name: target_name} for schemas that should
+    be renamed after pg_restore completes.  Schemas kept under their original
+    name are omitted from the dict.
+
+    Why post-restore rename: pg_restore has no --target-schema flag, so objects
+    are always restored under the name embedded in the dump.  We rename
+    afterwards using ALTER SCHEMA RENAME (fast, atomic) if the target name is
+    free, or SET SCHEMA on each object if the target already exists (e.g.
+    remapping 'fuelrod' into 'public').
+    """
+    _section("Step 4b — Schema Remapping (optional)")
+    console.print(
+        "  Dump schema(s): "
+        + ", ".join(f"[bold]{s}[/]" for s in selected_schemas)
+    )
+    console.print("  Leave blank to keep each name as-is.\n")
+    mapping: dict[str, str] = {}
+    for schema in selected_schemas:
+        new_name = (
+            questionary.text(f"  Restore '{schema}' as", default=schema).ask() or schema
+        ).strip()
+        if new_name and new_name != schema:
+            mapping[schema] = new_name
+
+    if mapping:
+        for src, dst in mapping.items():
+            console.print(f"  [cyan]{src}[/] → [bold]{dst}[/]")
+    else:
+        console.print("  No remapping — schemas will be restored under their original names.")
+    return mapping
 
 
 def _step_role_analysis(toc: str, adapter) -> list[str]:
@@ -491,6 +535,7 @@ def run_restore(cfg: Config) -> None:
     schema_args: list[str] = []
     table_args: list[str] = []
     role_args: list[str] = []
+    schema_remap: dict[str, str] = {}
     scope_args: list[str] = []
     clean_args: list[str] = []
     jobs = 1
@@ -519,6 +564,8 @@ def run_restore(cfg: Config) -> None:
         if adapter.supports_schemas:
             schema_args, selected_schemas = _step_schema_selection(toc)
             table_args = _step_table_selection(toc, selected_schemas)
+            if selected_schemas:
+                schema_remap = _step_schema_remap(selected_schemas)
 
         if adapter.supports_roles:
             role_args = _step_role_analysis(toc, adapter)
@@ -551,6 +598,9 @@ def run_restore(cfg: Config) -> None:
     console.print(f"  Target DB   : [bold]{target_db}[/]")
     if adapter.supports_schemas:
         console.print(f"  Schemas     : {', '.join(selected_schemas) or 'all'}")
+        if schema_remap:
+            for src, dst in schema_remap.items():
+                console.print(f"  Remap       : [cyan]{src}[/] → [bold]{dst}[/]")
     if adapter.supports_toc:
         console.print(f"  Scope       : {scope_args[0].lstrip('-') if scope_args else 'full'}")
         console.print(f"  Drop first  : {'yes' if clean_args else 'no'}")
@@ -607,14 +657,27 @@ def run_restore(cfg: Config) -> None:
     except Exception as exc:
         _die(f"Restore failed: {exc}")
 
+    # ── Schema remapping (PG only) ────────────────────────────────
+    if adapter.supports_toc and schema_remap:
+        _section("Schema Remapping")
+        for src, dst in schema_remap.items():
+            console.print(f"  [cyan]{src}[/] → [bold]{dst}[/]...")
+            try:
+                adapter.remap_schema(src, dst, target_db)
+                console.print("  [green]Done.[/]")
+            except Exception as exc:  # noqa: BLE001
+                console.print(f"  [yellow]WARN:[/] remap failed: {exc}")
+
     # ── Post-restore stats (PG only) ───────────────────────────────
     if adapter.supports_toc:
         _section("Post-Restore Report")
         table_count = adapter.get_table_count(target_db)
         console.print(f"  Tables restored : {table_count}")
         for schema in selected_schemas:
-            cnt = adapter.get_table_count(target_db, schema=schema)
-            console.print(f"    {schema:<28} {cnt} tables")
+            effective = schema_remap.get(schema, schema)
+            cnt = adapter.get_table_count(target_db, schema=effective)
+            label = f"{schema} → {effective}" if schema in schema_remap else schema
+            console.print(f"    {label:<36} {cnt} tables")
 
     console.print()
     console.print(Panel(f"[bold green]RESTORE COMPLETE → {target_db}[/]", expand=False))
