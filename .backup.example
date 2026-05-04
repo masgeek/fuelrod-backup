@@ -1,5 +1,26 @@
 # fuelrod-backup example config
 # Copy this file to .backup and customize values.
+#
+# Two config styles are supported:
+#
+#   Single-engine  — set DB_TYPE + generic DB_* keys (original behaviour)
+#   Multi-engine   — set engine-prefixed PG_* / MY_* / MS_* keys and run
+#                    `fuelrod-backup backup --all-engines` to back up all
+#                    configured engines in parallel.
+#
+# In multi-engine mode DB_TYPE / DB_* keys are ignored.
+# Shared settings (BASE_DIR, COMPRESS_FILE, KEEP_DAYS, CONNECTION_TIMEOUT)
+# are always read without a prefix.
+
+# ── Shared ──────────────────────────────────────────────────────────────────
+BASE_DIR=./db-backup
+COMPRESS_FILE=true
+KEEP_DAYS=7
+CONNECTION_TIMEOUT=30
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SINGLE-ENGINE MODE  (comment out to use multi-engine mode below)
+# ══════════════════════════════════════════════════════════════════════════════
 
 # Engine: postgres | mariadb | mssql
 DB_TYPE=postgres
@@ -14,14 +35,6 @@ DB_PORT=5432
 USE_DOCKER=true
 SERVICE=postgres
 
-# Storage and retention
-BASE_DIR=./db-backup
-COMPRESS_FILE=true
-KEEP_DAYS=7
-
-# Timeout
-CONNECTION_TIMEOUT=30
-
 # PostgreSQL commands
 PG_DUMP_CMD=pg_dump
 PG_RESTORE_CMD=pg_restore
@@ -32,3 +45,38 @@ MYSQL_CMD=mysql
 
 # MSSQL backup location inside container
 MSSQL_BACKUP_DIR=/var/opt/mssql/backups
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MULTI-ENGINE MODE  (run: fuelrod-backup backup --all-engines)
+# Only engines with credentials set are activated.
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── PostgreSQL (PG_) ─────────────────────────────────────────────────────────
+#PG_USERNAME=postgres
+#PG_PASSWORD=change_me
+#PG_HOST=127.0.0.1
+#PG_PORT=5432
+#PG_SERVICE=postgres
+#PG_USE_DOCKER=true
+#PG_DUMP_CMD=pg_dump
+#PG_RESTORE_CMD=pg_restore
+#PG_CMD=psql
+
+# ── MariaDB / MySQL (MY_) ────────────────────────────────────────────────────
+#MY_USERNAME=root
+#MY_PASSWORD=change_me
+#MY_HOST=127.0.0.1
+#MY_PORT=3306
+#MY_SERVICE=mariadb
+#MY_USE_DOCKER=true
+#MY_DUMP_CMD=mariadb-dump
+#MY_CMD=mysql
+
+# ── MSSQL (MS_) ──────────────────────────────────────────────────────────────
+#MS_USERNAME=sa
+#MS_PASSWORD=change_me
+#MS_HOST=127.0.0.1
+#MS_PORT=1433
+#MS_SERVICE=mssql
+#MS_USE_DOCKER=true
+#MS_BACKUP_DIR=/var/opt/mssql/backups
