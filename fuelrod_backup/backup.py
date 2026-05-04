@@ -6,6 +6,8 @@ import gzip
 import shutil
 import subprocess
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
@@ -285,3 +287,96 @@ def run_backup(
 
     console.print()
     console.print(Panel("[bold green]BACKUP COMPLETE[/]", expand=False))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  Parallel multi-engine entry point
+# ──────────────────────────────────────────────────────────────────────────────
+
+def run_parallel_backup(
+        configs: list[Config],
+        *,
+        databases: list[str] | None = None,
+        compress: bool | None = None,
+        keep_days: int | None = None,
+) -> None:
+    """Run non-interactive backups for every engine in *configs* in parallel.
+
+    Each engine's output is prefixed with ``[engine]`` so interleaved lines
+    remain readable.  A final summary table shows pass/fail per engine.
+    """
+    if len(configs) == 1:
+        run_backup(configs[0], interactive=False, databases=databases, compress=compress, keep_days=keep_days)
+        return
+
+    _lock = threading.Lock()
+
+    def _cprint(engine: str, msg: str) -> None:
+        with _lock:
+            console.print(f"[dim]\\[{engine}][/] {msg}")
+
+    def _backup_engine(cfg: Config) -> tuple[str, bool, str]:
+        engine = cfg.db_type.value
+        try:
+            if compress is not None:
+                cfg.compress = compress
+            if keep_days is not None:
+                cfg.days_to_keep = keep_days
+
+            if not cfg.password:
+                return engine, False, "password not set — check config"
+
+            adapter = get_adapter(cfg)
+            try:
+                questionary.check_connection_with_countdown(adapter.check_connection, cfg.connection_timeout)
+            except TimeoutError as exc:
+                return engine, False, str(exc)
+
+            _cprint(engine, "[green]connection OK[/]")
+
+            dbs_to_backup = databases or adapter.list_databases()
+            if not dbs_to_backup:
+                return engine, False, "no databases found"
+
+            if not cfg.base_dir:
+                return engine, False, "BASE_DIR not set"
+
+            Path(cfg.backup_dir).mkdir(parents=True, exist_ok=True)
+
+            for db in dbs_to_backup:
+                _cprint(engine, f"backing up [bold]{db}[/]")
+                _backup_one(db, cfg, adapter)
+
+            _cleanup_old(str(cfg.backup_dir), cfg.days_to_keep)
+            return engine, True, ""
+
+        except subprocess.CalledProcessError as exc:
+            return engine, False, f"subprocess exit {exc.returncode}"
+        except Exception as exc:
+            return engine, False, str(exc)
+
+    console.print(Panel(
+        f"[bold cyan]Parallel backup — {len(configs)} engine(s): "
+        f"{', '.join(c.db_type.value for c in configs)}[/]",
+        expand=False,
+    ))
+
+    with ThreadPoolExecutor(max_workers=len(configs)) as pool:
+        futures = {pool.submit(_backup_engine, cfg): cfg for cfg in configs}
+        results: list[tuple[str, bool, str]] = [f.result() for f in as_completed(futures)]
+
+    console.print()
+    all_ok = True
+    for engine, ok, err in sorted(results):
+        if ok:
+            console.print(f"  [green]✓[/] {engine}")
+        else:
+            console.print(f"  [red]✗[/] {engine}: {err}")
+            all_ok = False
+
+    console.print()
+    if all_ok:
+        console.print(Panel("[bold green]ALL ENGINES COMPLETE[/]", expand=False))
+    else:
+        console.print(Panel("[bold red]SOME ENGINES FAILED — see output above[/]", expand=False))
+        sys.exit(1)
