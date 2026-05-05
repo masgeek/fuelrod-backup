@@ -20,6 +20,7 @@ class DbAdapter(ABC):
     supports_schemas: bool = False
     supports_roles: bool = False
     supports_toc: bool = False
+    supports_schema_drop: bool = False
     dump_extension: str = ".dump"
 
     # ──────────────────────────────────────────────────────────────
@@ -77,6 +78,9 @@ class DbAdapter(ABC):
 
     def terminate_connections(self, dbname: str) -> int:
         return 0
+
+    def drop_schema(self, dbname: str, schema: str) -> None:
+        raise NotImplementedError(f"{type(self).__name__} does not support drop_schema")
 
     def role_exists(self, role: str) -> bool:
         raise NotImplementedError(f"{type(self).__name__} does not support role_exists")

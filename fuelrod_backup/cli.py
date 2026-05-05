@@ -137,6 +137,26 @@ def restore(
     run_restore(cfg)
 
 
+@app.command("drop")
+def drop(
+        use_docker: Annotated[bool | None, _DOCKER_OPT] = None,
+        db_type: Annotated[str | None, _DB_TYPE_OPT] = None,
+        config_file: Annotated[Path | None, _CONFIG_OPT] = None,
+) -> None:
+    """Interactively drop a database or schema.
+
+    Kills all active connections before dropping a database.
+    Schema drop uses CASCADE (removes all objects inside the schema).
+    Requires typing the name to confirm — operation is irreversible.
+    """
+    from .drop import run_drop
+
+    _validate_db_type(db_type)
+    cfg = load_config(config_file, db_type_override=db_type)
+    _apply_docker_override(cfg, use_docker)
+    run_drop(cfg)
+
+
 @app.command("test")
 def test_connection(
         use_docker: Annotated[bool | None, _DOCKER_OPT] = None,

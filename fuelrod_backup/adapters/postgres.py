@@ -13,6 +13,7 @@ class PostgresAdapter(DbAdapter):
     supports_schemas: bool = True
     supports_roles: bool = True
     supports_toc: bool = True
+    supports_schema_drop: bool = True
     dump_extension: str = ".dump"
 
     def __init__(self, cfg: Config) -> None:
@@ -143,6 +144,9 @@ class PostgresAdapter(DbAdapter):
 
     def remap_schema(self, src: str, dst: str, dbname: str) -> None:
         self._runner.remap_schema(src, dst, dbname)
+
+    def drop_schema(self, dbname: str, schema: str) -> None:
+        self._runner.drop_schema(dbname, schema)
 
     def get_table_count(self, dbname: str, schema: str | None = None) -> str:
         return self._runner.get_table_count(dbname, schema)
