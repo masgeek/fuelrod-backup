@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from rich.console import Console
+from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
 from ..adapters.mariadb import MariaDbAdapter
 from ..runner import PgRunner
@@ -126,51 +127,78 @@ class MigrateRunner:
 
         # ── 6. Migrate data ───────────────────────────────────────────────────
         console.print(f"  Migrating {len(tables)} tables (parallel={self._parallel})…")
-        console.print()
 
-        skipped_log = Path(f"{dst_db}_skipped_rows.jsonl")
+        skipped_log = Path(f"{dst_db}_skipped_rows.json")
 
         small = [t for t in tables if (t.auto_increment_start or 0) < _LARGE_TABLE_THRESHOLD]
         large = [t for t in tables if (t.auto_increment_start or 0) >= _LARGE_TABLE_THRESHOLD]
 
         failed = False
+        tables_done = 0
+        n_tables = len(tables)
 
-        def _do_table(tdef) -> TableResult:
-            console.print(f"  [dim]→[/] {tdef.name}")
-            return self._migrator.migrate_table(
-                table=tdef.name,
-                columns=tdef.columns,
-                src_cfg=self._src_cfg,
-                dst_runner=self._dst_runner,
-                src_db=src_db,
-                dst_db=dst_db,
-                target_schema=self._target_schema,
-                batch_size=self._batch_size,
-                skipped_log=skipped_log,
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("{task.description}", min_width=35),
+            BarColumn(bar_width=36),
+            MofNCompleteColumn(),
+            TextColumn("[dim]rows[/]"),
+            TimeElapsedColumn(),
+            console=console,
+        ) as progress:
+            overall = progress.add_task(
+                f"[bold cyan]tables 0/{n_tables}[/]",
+                total=n_tables,
             )
 
-        # Small tables: parallel
-        with ThreadPoolExecutor(max_workers=self._parallel) as pool:
-            futures = {pool.submit(_do_table, tdef): tdef for tdef in small}
-            for fut in as_completed(futures):
-                res = fut.result()
+            def _do_table(tdef) -> TableResult:
+                return self._migrator.migrate_table(
+                    table=tdef.name,
+                    columns=tdef.columns,
+                    src_cfg=self._src_cfg,
+                    dst_runner=self._dst_runner,
+                    src_db=src_db,
+                    dst_db=dst_db,
+                    target_schema=self._target_schema,
+                    batch_size=self._batch_size,
+                    skipped_log=skipped_log,
+                    progress=progress,
+                )
+
+            # Small tables: parallel
+            with ThreadPoolExecutor(max_workers=self._parallel) as pool:
+                futures = {pool.submit(_do_table, tdef): tdef for tdef in small}
+                for fut in as_completed(futures):
+                    res = fut.result()
+                    self._report.record(res)
+                    tables_done += 1
+                    progress.update(
+                        overall,
+                        advance=1,
+                        description=f"[bold cyan]tables {tables_done}/{n_tables}[/]",
+                    )
+                    if res.status == "failed":
+                        failed = True
+                        if self._fail_fast:
+                            pool.shutdown(wait=False, cancel_futures=True)
+                            break
+
+            # Large tables: sequential in main thread
+            for tdef in large:
+                if failed and self._fail_fast:
+                    break
+                res = _do_table(tdef)
                 self._report.record(res)
+                tables_done += 1
+                progress.update(
+                    overall,
+                    advance=1,
+                    description=f"[bold cyan]tables {tables_done}/{n_tables}[/]",
+                )
                 if res.status == "failed":
                     failed = True
                     if self._fail_fast:
-                        pool.shutdown(wait=False, cancel_futures=True)
                         break
-
-        # Large tables: sequential in main thread
-        for tdef in large:
-            if failed and self._fail_fast:
-                break
-            res = _do_table(tdef)
-            self._report.record(res)
-            if res.status == "failed":
-                failed = True
-                if self._fail_fast:
-                    break
 
         # ── 7. Apply post-data DDL (indexes, FKs, comments, sequence resets) ──
         if not (failed and self._fail_fast):
