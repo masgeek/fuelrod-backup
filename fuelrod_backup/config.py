@@ -251,7 +251,7 @@ def _load_prefixed_config(
     raw: dict[str, str],
     config_file: Path | None,
     fallback_base: str,
-) -> "Config | None":
+) -> Config | None:
     """Build a Config for *db_type* using *prefix*-keyed values (e.g. PG_, MY_, MS_).
 
     Returns None when neither ``{prefix}USERNAME`` nor ``{prefix}HOST`` is set,
@@ -313,7 +313,7 @@ def _load_prefixed_config(
     return cfg
 
 
-def load_all_configs(config_file: Path | None = None) -> list["Config"]:
+def load_all_configs(config_file: Path | None = None) -> list[Config]:
     """Return one Config per engine that has prefixed keys in the config file.
 
     Looks for ``PG_USERNAME``/``PG_HOST`` (postgres), ``MY_*`` (mariadb),

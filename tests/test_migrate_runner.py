@@ -1,9 +1,6 @@
 """Integration-style tests for MigrateRunner with monkeypatched adapters."""
 
-from pathlib import Path
-from unittest.mock import MagicMock, patch
 
-import pytest
 from fuelrod_backup.config import Config, DbType
 from fuelrod_backup.migrate.runner import MigrateRunner
 from fuelrod_backup.migrate.schema import ColumnDef, DatabaseSchema, TableDef
@@ -85,7 +82,7 @@ class TestDryRun:
 
 class TestTableFailure:
     def test_table_failure_recorded_but_others_continue(self, monkeypatch):
-        from fuelrod_backup.migrate.schema import ColumnDef, TableDef, DatabaseSchema
+        from fuelrod_backup.migrate.schema import ColumnDef, DatabaseSchema, TableDef
 
         table_a = TableDef("a", columns=[
             ColumnDef("id", 1, "int", "int(11)", False, False, None, "", "PRI", "", None, None, None, None),
@@ -134,7 +131,7 @@ class TestTableFailure:
         assert ok_tables[0].table == "b"
 
     def test_fail_fast_stops_on_first_failure(self, monkeypatch):
-        from fuelrod_backup.migrate.schema import DatabaseSchema, TableDef, ColumnDef
+        from fuelrod_backup.migrate.schema import ColumnDef, DatabaseSchema, TableDef
 
         tables = [
             TableDef(f"t{i}", columns=[ColumnDef("id", 1, "int", "int(11)", False, False, None, "", "PRI", "", None, None, None, None)])

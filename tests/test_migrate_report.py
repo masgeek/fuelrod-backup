@@ -4,7 +4,6 @@ import json
 import threading
 from pathlib import Path
 
-import pytest
 from fuelrod_backup.migrate.report import MigrationReport, TableResult
 
 
@@ -72,8 +71,9 @@ class TestMigrationReport:
         assert len(report.results) == 50
 
     def test_print_summary_runs_without_error(self, capsys):
-        from rich.console import Console
         from io import StringIO
+
+        from rich.console import Console
         buf = StringIO()
         con = Console(file=buf, highlight=False)
         report = MigrationReport()

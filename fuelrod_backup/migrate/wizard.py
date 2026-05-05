@@ -35,7 +35,7 @@ def run_migrate_wizard(src_cfg, dst_cfg) -> tuple:
     _section("Source Connection (MariaDB)")
     src_adapter = MariaDbAdapter(src_cfg)
 
-    console.print(f"  Engine: [cyan]mariadb[/]")
+    console.print("  Engine: [cyan]mariadb[/]")
     if src_cfg.use_docker:
         console.print(f"  Mode  : [cyan]Docker[/] — service '[bold]{src_cfg.service}[/]'")
     else:
@@ -66,7 +66,7 @@ def run_migrate_wizard(src_cfg, dst_cfg) -> tuple:
     from ..adapters.postgres import PostgresAdapter
     dst_adapter = PostgresAdapter(dst_cfg)
 
-    console.print(f"  Engine: [cyan]postgres[/]")
+    console.print("  Engine: [cyan]postgres[/]")
     if dst_cfg.use_docker:
         console.print(f"  Mode  : [cyan]Docker[/] — service '[bold]{dst_cfg.service}[/]'")
     else:

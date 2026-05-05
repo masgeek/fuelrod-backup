@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -12,7 +11,7 @@ from rich.table import Column
 
 from ..adapters.mariadb import MariaDbAdapter
 from ..runner import PgRunner
-from .data import DataMigrator, _LARGE_TABLE_THRESHOLD
+from .data import _LARGE_TABLE_THRESHOLD, DataMigrator
 from .report import MigrationReport, TableResult
 from .schema import DatabaseSchema, GeneratedDDL, SchemaExtractor, SchemaGenerator
 from .validate import ValidationResult, Validator

@@ -7,8 +7,7 @@ import sys
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
-from rich.table import Column
-from rich.table import Table
+from rich.table import Column, Table
 
 from . import prompt as questionary
 from .adapters import get_adapter

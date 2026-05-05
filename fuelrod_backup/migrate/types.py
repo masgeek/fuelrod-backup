@@ -47,8 +47,8 @@ class TypeMapper:
         if dt == "bigint":
             if is_unsigned:
                 warnings.append(
-                    f"BIGINT UNSIGNED column mapped to NUMERIC(20,0) — "
-                    f"values above 9223372036854775807 cannot fit in PG BIGINT"
+                    "BIGINT UNSIGNED column mapped to NUMERIC(20,0) — "
+                    "values above 9223372036854775807 cannot fit in PG BIGINT"
                 )
                 return "NUMERIC(20,0)", warnings
             return "BIGINT", warnings

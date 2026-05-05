@@ -113,12 +113,12 @@ class Validator:
 
         try:
             src_cksum = src_adapter._query_one(sql_src, dbname=src_db) or None
-        except Exception as exc:
+        except Exception:
             return None, None, None
 
         try:
             dst_cksum = pg_runner._query_one(sql_dst, dbname=dst_db) or None
-        except Exception as exc:
+        except Exception:
             return src_cksum, None, None
 
         match = (src_cksum == dst_cksum) if (src_cksum and dst_cksum) else None

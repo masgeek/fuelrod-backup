@@ -1,9 +1,8 @@
 """Unit tests for SchemaExtractor with monkeypatched MariaDB adapter."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-import pytest
-from fuelrod_backup.migrate.schema import SchemaExtractor, SchemaGenerator, TableDef, ColumnDef
+from fuelrod_backup.migrate.schema import ColumnDef, SchemaExtractor, SchemaGenerator, TableDef
 
 
 def _make_adapter(

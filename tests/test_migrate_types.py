@@ -1,6 +1,7 @@
 """Unit tests for TypeMapper — MariaDB → PostgreSQL type conversion."""
 
 import pytest
+
 from fuelrod_backup.migrate.types import TypeMapper
 
 

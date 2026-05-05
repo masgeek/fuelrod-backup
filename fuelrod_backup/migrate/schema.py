@@ -4,9 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .types import TypeMapper
 from .transform import SqlTransformer, TransformResult
-
+from .types import TypeMapper
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  Domain dataclasses
@@ -285,7 +284,7 @@ class SchemaExtractor:
 _IDENTITY_COMPATIBLE = frozenset({"SMALLINT", "INTEGER", "BIGINT"})
 
 
-def _coerce_identity_type(pg_type: str, col: "ColumnDef", warnings: list[str]) -> str:
+def _coerce_identity_type(pg_type: str, col: ColumnDef, warnings: list[str]) -> str:
     """Return a GENERATED ALWAYS AS IDENTITY-compatible type for *col*.
 
     PostgreSQL only allows SMALLINT, INTEGER, or BIGINT as identity columns.

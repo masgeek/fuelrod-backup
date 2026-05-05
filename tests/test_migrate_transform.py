@@ -1,7 +1,8 @@
 """Unit tests for SqlTransformer — DDL rewriting rules."""
 
 import pytest
-from fuelrod_backup.migrate.transform import SqlTransformer, TransformResult
+
+from fuelrod_backup.migrate.transform import SqlTransformer
 
 
 @pytest.fixture
