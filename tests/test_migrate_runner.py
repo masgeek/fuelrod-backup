@@ -32,7 +32,9 @@ def _simple_table():
     return TableDef(
         name="users",
         columns=[
-            ColumnDef("id", 1, "int", "int(11)", False, False, None, "auto_increment", "PRI", "", None, None, None, None),
+            ColumnDef(
+                "id", 1, "int", "int(11)", False, False, None, "auto_increment", "PRI", "", None, None, None, None,
+            ),
             ColumnDef("name", 2, "varchar", "varchar(100)", True, False, None, "", "", "", 100, None, None, None),
         ],
     )
@@ -134,7 +136,9 @@ class TestTableFailure:
         from fuelrod_backup.migrate.schema import ColumnDef, DatabaseSchema, TableDef
 
         tables = [
-            TableDef(f"t{i}", columns=[ColumnDef("id", 1, "int", "int(11)", False, False, None, "", "PRI", "", None, None, None, None)])
+            TableDef(f"t{i}", columns=[
+                ColumnDef("id", 1, "int", "int(11)", False, False, None, "", "PRI", "", None, None, None, None),
+            ])
             for i in range(5)
         ]
         schema = DatabaseSchema(name="db", tables=tables)
@@ -155,5 +159,5 @@ class TestTableFailure:
             return TableResult(table=table, status="failed", error="fail")
 
         monkeypatch.setattr("fuelrod_backup.migrate.runner.DataMigrator.migrate_table", _fake)
-        report = runner.migrate_database("db", "db_pg")
+        runner.migrate_database("db", "db_pg")
         assert attempted["n"] < 5, "fail_fast should have stopped before migrating all tables"

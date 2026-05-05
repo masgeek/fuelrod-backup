@@ -91,7 +91,7 @@ class DataMigrator:
         try:
             with src_conn.cursor(pymysql.cursors.SSCursor) as cur:
                 cur.execute(
-                    f"SELECT {', '.join('`' + c + '`' for c in all_col_names)} "
+                    f"SELECT {', '.join('`' + c + '`' for c in all_col_names)} "  # noqa: S608
                     f"FROM `{table}`"
                 )
                 if task_id is not None:
@@ -178,7 +178,7 @@ class DataMigrator:
         )
         try:
             with conn.cursor() as cur:
-                cur.execute(f"SELECT COUNT(*) FROM `{table}`")
+                cur.execute(f"SELECT COUNT(*) FROM `{table}`")  # noqa: S608
                 row = cur.fetchone()
                 return int(row[0]) if row else 0
         finally:
@@ -240,7 +240,7 @@ class DataMigrator:
         col_list = ", ".join(f'"{c}"' for c in col_names)
         placeholders = ", ".join(["%s"] * len(col_names))
         sql = (
-            f'INSERT INTO "{target_schema}"."{table}" ({col_list}) '
+            f'INSERT INTO "{target_schema}"."{table}" ({col_list}) '  # noqa: S608
             f'VALUES ({placeholders})'
         )
         # Use individual execute() calls inside one transaction rather than

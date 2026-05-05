@@ -128,7 +128,7 @@ class SqlTransformer:
                     f'(applied after data load via setval)'
                 )
                 post.append(
-                    f'SELECT setval(pg_get_serial_sequence('
+                    f'SELECT setval(pg_get_serial_sequence('  # noqa: S608
                     f'\'"{ target_schema }"."{table_name}"\', \'id\'), '
                     f'GREATEST({start - 1}, COALESCE(MAX(id), {start - 1}))) '
                     f'FROM "{target_schema}"."{table_name}";'

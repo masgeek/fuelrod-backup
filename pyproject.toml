@@ -74,8 +74,8 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-# Test helpers may use assert directly
-"tests/**" = ["S101"]
+# Test helpers may use assert directly and hardcode fixture credentials
+"tests/**" = ["S101", "S105", "S106"]
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
