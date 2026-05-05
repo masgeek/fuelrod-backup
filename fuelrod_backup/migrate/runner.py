@@ -8,6 +8,7 @@ from pathlib import Path
 
 from rich.console import Console
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
+from rich.table import Column
 
 from ..adapters.mariadb import MariaDbAdapter
 from ..runner import PgRunner
@@ -25,22 +26,22 @@ class MigrateError(RuntimeError):
 
 class MigrateRunner:
     def __init__(
-        self,
-        src_cfg,
-        dst_cfg,
-        *,
-        target_schema: str = "public",
-        batch_size: int = 1000,
-        parallel: int = 4,
-        dry_run: bool = False,
-        validate: bool = True,
-        validate_checksums: bool = False,
-        fail_fast: bool = False,
-        unsigned_checks: bool = False,
-        enum_as_type: bool = False,
-        skip_tables: list[str] | None = None,
-        only_tables: list[str] | None = None,
-        report_file: Path | None = None,
+            self,
+            src_cfg,
+            dst_cfg,
+            *,
+            target_schema: str = "public",
+            batch_size: int = 1000,
+            parallel: int = 4,
+            dry_run: bool = False,
+            validate: bool = True,
+            validate_checksums: bool = False,
+            fail_fast: bool = False,
+            unsigned_checks: bool = False,
+            enum_as_type: bool = False,
+            skip_tables: list[str] | None = None,
+            only_tables: list[str] | None = None,
+            report_file: Path | None = None,
     ) -> None:
         self._src_cfg = src_cfg
         self._dst_cfg = dst_cfg
@@ -138,13 +139,13 @@ class MigrateRunner:
         n_tables = len(tables)
 
         with Progress(
-            SpinnerColumn(),
-            TextColumn("{task.description}", min_width=35),
-            BarColumn(bar_width=36),
-            MofNCompleteColumn(),
-            TextColumn("[dim]rows[/]"),
-            TimeElapsedColumn(),
-            console=console,
+                SpinnerColumn(),
+                TextColumn("{task.description}", table_column=Column(min_width=35)),
+                BarColumn(bar_width=36),
+                MofNCompleteColumn(),
+                TextColumn("[dim]rows[/]"),
+                TimeElapsedColumn(),
+                console=console,
         ) as progress:
             overall = progress.add_task(
                 f"[bold cyan]tables 0/{n_tables}[/]",
