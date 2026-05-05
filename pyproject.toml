@@ -71,11 +71,12 @@ select = [
 ignore = [
     "S603", # subprocess call — reviewed; list form is used throughout (no shell=True)
     "S607", # partial executable path — docker/pg_dump/mysqldump are expected on PATH
+    "S608", # SQL injection — queries use schema/table names from internal metadata, not user input
 ]
 
 [tool.ruff.lint.per-file-ignores]
-# Test helpers may use assert directly
-"tests/**" = ["S101"]
+# Test helpers may use assert directly and hardcode fixture credentials
+"tests/**" = ["S101", "S105", "S106"]
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
