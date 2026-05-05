@@ -14,3 +14,4 @@ akilimo_skipped_rows.json
 
 # OpenCode
 .oc/
+.idea/pyProjectModel.xml
