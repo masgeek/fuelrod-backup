@@ -19,6 +19,14 @@ class DbType(StrEnum):
     MSSQL = "mssql"
 
 
+# Maps each engine to the config key prefix used in multi-engine mode
+_ENGINE_PREFIXES: dict[str, str] = {
+    DbType.POSTGRES: "PG_",
+    DbType.MARIADB: "MY_",
+    DbType.MSSQL: "MS_",
+}
+
+
 @dataclass
 class Config:
     user: str = "postgres"
@@ -123,12 +131,13 @@ def _find_config_file() -> Path | None:
     return None
 
 
-def load_config(config_file: Path | None = None) -> Config:
+def load_config(config_file: Path | None = None, db_type_override: str | None = None) -> Config:
     """
     Build a Config by merging (lowest → highest priority):
       1. Dataclass defaults
       2. .backup or .env file (auto-discovered, or explicit --config path)
       3. Environment variables (always win)
+      4. db_type_override (CLI --db-type flag, highest priority for engine selection)
 
     The resolved config_source field records which file was actually used.
     """
@@ -148,11 +157,17 @@ def load_config(config_file: Path | None = None) -> Config:
     def _get(key: str, default: str = "") -> str:
         return os.environ.get(key, raw.get(key, default))
 
-    # Engine selector
-    try:
-        cfg.db_type = DbType(_get("DB_TYPE", "postgres").lower())
-    except ValueError:
-        cfg.db_type = DbType.POSTGRES
+    # Engine selector — CLI override wins over file/env
+    if db_type_override is not None:
+        try:
+            cfg.db_type = DbType(db_type_override.lower())
+        except ValueError:
+            cfg.db_type = DbType.POSTGRES
+    else:
+        try:
+            cfg.db_type = DbType(_get("DB_TYPE", "postgres").lower())
+        except ValueError:
+            cfg.db_type = DbType.POSTGRES
 
     # Default BASE_DIR: next to the config file if one was found, else cwd/db-backup.
     # Never fall back into site-packages (Path(__file__) is wrong after pip install).
@@ -172,11 +187,18 @@ def load_config(config_file: Path | None = None) -> Config:
     else:
         _default_user, _default_port, _default_service = "postgres", "5432", "postgres"
 
-    cfg.user = _get("DB_USERNAME", _default_user)
-    cfg.password = _get("DB_PASSWORD", "")
-    cfg.host = _get("DB_HOST", "127.0.0.1")
-    cfg.service = _get("SERVICE", _default_service)
-    cfg.use_docker = _get("USE_DOCKER", "true").strip().lower() in ("true", "1", "yes")
+    # For each connection field, fall back to the engine-prefixed key so that
+    # a multi-engine config (PG_*/MY_*/MS_*) also works with single-engine commands.
+    _pfx = _ENGINE_PREFIXES[cfg.db_type]
+
+    def _getc(generic: str, prefixed_short: str, default: str = "") -> str:
+        return _get(generic, "") or _get(_pfx + prefixed_short, default)
+
+    cfg.user = _getc("DB_USERNAME", "USERNAME", _default_user)
+    cfg.password = _getc("DB_PASSWORD", "PASSWORD", "")
+    cfg.host = _getc("DB_HOST", "HOST", "127.0.0.1")
+    cfg.service = _getc("SERVICE", "SERVICE", _default_service)
+    cfg.use_docker = _getc("USE_DOCKER", "USE_DOCKER", "true").strip().lower() in ("true", "1", "yes")
     cfg.compress = _get("COMPRESS_FILE", "false").strip().lower() in ("true", "1", "yes")
     try:
         cfg.connection_timeout = int(_get("CONNECTION_TIMEOUT", "30"))
@@ -195,7 +217,7 @@ def load_config(config_file: Path | None = None) -> Config:
     cfg.mssql_backup_dir = _get("MSSQL_BACKUP_DIR", "/var/opt/mssql/backups")
 
     try:
-        cfg.port = int(_get("DB_PORT", _default_port))
+        cfg.port = int(_getc("DB_PORT", "PORT", _default_port))
     except ValueError:
         cfg.port = int(_default_port)
 
@@ -221,3 +243,110 @@ def load_config(config_file: Path | None = None) -> Config:
         cfg.gdrive_include = [p.strip() for p in raw_include.split() if p.strip()]
 
     return cfg
+
+
+def _load_prefixed_config(
+    db_type: DbType,
+    prefix: str,
+    raw: dict[str, str],
+    config_file: Path | None,
+    fallback_base: str,
+) -> Config | None:
+    """Build a Config for *db_type* using *prefix*-keyed values (e.g. PG_, MY_, MS_).
+
+    Returns None when neither ``{prefix}USERNAME`` nor ``{prefix}HOST`` is set,
+    meaning this engine is not configured for multi-engine mode.
+    """
+    def _get(key: str, default: str = "") -> str:
+        return os.environ.get(key, raw.get(key, default))
+
+    def _ep(short: str, default: str = "") -> str:
+        return os.environ.get(prefix + short, raw.get(prefix + short, default))
+
+    if not (_ep("USERNAME") or _ep("HOST")):
+        return None
+
+    cfg = Config()
+    cfg.db_type = db_type
+    cfg.config_source = config_file.resolve() if config_file else None
+
+    # Shared settings (no per-engine prefix)
+    cfg.base_dir = str(Path(_get("BASE_DIR", fallback_base)))
+    cfg.compress = _get("COMPRESS_FILE", "false").strip().lower() in ("true", "1", "yes")
+    try:
+        cfg.days_to_keep = int(_get("KEEP_DAYS", "7"))
+    except ValueError:
+        cfg.days_to_keep = 7
+    try:
+        cfg.connection_timeout = int(_get("CONNECTION_TIMEOUT", "30"))
+    except ValueError:
+        cfg.connection_timeout = 30
+
+    # Per-engine connection defaults
+    if db_type == DbType.MARIADB:
+        _def_user, _def_port, _def_service = "root", "3306", "mariadb"
+    elif db_type == DbType.MSSQL:
+        _def_user, _def_port, _def_service = "sa", "1433", "mssql"
+    else:
+        _def_user, _def_port, _def_service = "postgres", "5432", "postgres"
+
+    cfg.user = _ep("USERNAME", _def_user)
+    cfg.password = _ep("PASSWORD", "")
+    cfg.host = _ep("HOST", "127.0.0.1")
+    cfg.service = _ep("SERVICE", _def_service)
+    cfg.use_docker = _ep("USE_DOCKER", "true").strip().lower() in ("true", "1", "yes")
+    try:
+        cfg.port = int(_ep("PORT", _def_port))
+    except ValueError:
+        cfg.port = int(_def_port)
+
+    if db_type == DbType.POSTGRES:
+        cfg.pg_dump_cmd = _ep("DUMP_CMD", "pg_dump")
+        cfg.pg_restore_cmd = _ep("RESTORE_CMD", "pg_restore")
+        cfg.psql_cmd = _ep("CMD", "psql")
+    elif db_type == DbType.MARIADB:
+        cfg.mysql_dump_cmd = _ep("DUMP_CMD", "mysqldump")
+        cfg.mysql_cmd = _ep("CMD", "mysql")
+    elif db_type == DbType.MSSQL:
+        cfg.mssql_backup_dir = _ep("BACKUP_DIR", "/var/opt/mssql/backups")
+
+    return cfg
+
+
+def load_all_configs(config_file: Path | None = None) -> list[Config]:
+    """Return one Config per engine that has prefixed keys in the config file.
+
+    Looks for ``PG_USERNAME``/``PG_HOST`` (postgres), ``MY_*`` (mariadb),
+    ``MS_*`` (mssql).  Shared settings (``BASE_DIR``, ``COMPRESS_FILE``,
+    ``KEEP_DAYS``, ``CONNECTION_TIMEOUT``) are read without a prefix and
+    applied to every engine config.
+
+    Falls back to a single :func:`load_config` call when no engine-prefixed
+    keys are found (preserves backward-compatibility with ``DB_TYPE`` configs).
+    """
+    if config_file is None:
+        config_file = _find_config_file()
+
+    raw: dict[str, str] = {}
+    if config_file and config_file.is_file():
+        raw = _parse_env_file(config_file)
+
+    fallback_base = str(
+        (config_file.parent / "db-backup") if config_file else (Path.cwd() / "db-backup")
+    )
+
+    configs: list[Config] = []
+    for db_type_val, prefix in _ENGINE_PREFIXES.items():
+        cfg = _load_prefixed_config(DbType(db_type_val), prefix, raw, config_file, fallback_base)
+        if cfg is not None:
+            configs.append(cfg)
+
+    if not configs:
+        # No engine-prefixed keys found — behave like single-engine load_config
+        return [load_config(config_file)]
+
+    src = str(config_file.resolve()) if config_file else "[yellow]none[/]"
+    _console.print(f"[dim]config:[/] {src}")
+    engines = ", ".join(c.db_type.value for c in configs)
+    _console.print(f"[dim]engines:[/] {engines}")
+    return configs

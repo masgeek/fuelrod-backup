@@ -106,6 +106,19 @@ class MariaDbAdapter(DbAdapter):
         finally:
             conn.close()
 
+    def _query_rows(
+        self, sql: str, params: tuple = (), dbname: str = ""
+    ) -> list[dict]:
+        """Execute *sql* and return all rows as a list of dicts (column→value)."""
+        import pymysql.cursors
+        conn = self._connect(dbname)
+        try:
+            with conn.cursor(pymysql.cursors.DictCursor) as cur:
+                cur.execute(sql, params)
+                return list(cur.fetchall())
+        finally:
+            conn.close()
+
     def _docker_prefix(self) -> list[str]:
         """docker exec prefix that injects MYSQL_PWD to avoid password on CLI."""
         return [

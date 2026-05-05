@@ -9,7 +9,7 @@ import typer
 from rich.console import Console
 from rich.panel import Panel
 
-from .config import DbType, load_config
+from .config import DbType, load_all_configs, load_config
 
 app = typer.Typer(
     name="fuelrod-backup",
@@ -30,14 +30,10 @@ def _apply_docker_override(cfg, use_docker: bool | None) -> None:
         cfg.use_docker = use_docker
 
 
-def _apply_db_type_override(cfg, db_type: str | None) -> None:
-    """Apply --db-type CLI flag if explicitly provided."""
-    if db_type is not None:
-        try:
-            cfg.db_type = DbType(db_type.lower())
-        except ValueError:
-            console.print(f"[bold red]ERROR:[/] Unknown --db-type '{db_type}'. Choose: postgres, mariadb, mssql")
-            raise typer.Exit(code=1)
+def _validate_db_type(db_type: str | None) -> None:
+    if db_type is not None and db_type.lower() not in (e.value for e in DbType):
+        console.print(f"[bold red]ERROR:[/] Unknown --db-type '{db_type}'. Choose: postgres, mariadb, mssql")
+        raise typer.Exit(code=1)
 
 
 @app.command()
@@ -45,6 +41,13 @@ def backup(
         no_interactive: Annotated[
             bool,
             typer.Option("--no-interactive", "-n", help="Skip all wizard prompts; back up all databases."),
+        ] = False,
+        all_engines: Annotated[
+            bool,
+            typer.Option(
+                "--all-engines", "-a",
+                help="Backup every engine configured with PG_/MY_/MS_ prefixes in parallel (non-interactive).",
+            ),
         ] = False,
         compress: Annotated[
             bool | None,
@@ -62,12 +65,28 @@ def backup(
         db_type: Annotated[str | None, _DB_TYPE_OPT] = None,
         config_file: Annotated[Path | None, _CONFIG_OPT] = None,
 ) -> None:
-    """Back up one or more databases (postgres | mariadb | mssql)."""
-    from .backup import run_backup
+    """Back up one or more databases (postgres | mariadb | mssql).
 
-    cfg = load_config(config_file)
+    Use --all-engines to back up every engine whose PG_/MY_/MS_ credentials
+    are configured, running all engines in parallel.
+    """
+    from .backup import run_backup, run_parallel_backup
+
+    _validate_db_type(db_type)
+    if all_engines:
+        configs = load_all_configs(config_file)
+        for cfg in configs:
+            _apply_docker_override(cfg, use_docker)
+        run_parallel_backup(
+            configs,
+            databases=list(databases) or None,
+            compress=compress,
+            keep_days=keep_days,
+        )
+        return
+
+    cfg = load_config(config_file, db_type_override=db_type)
     _apply_docker_override(cfg, use_docker)
-    _apply_db_type_override(cfg, db_type)
     run_backup(
         cfg,
         interactive=not no_interactive,
@@ -79,17 +98,63 @@ def backup(
 
 @app.command()
 def restore(
+        all_engines: Annotated[
+            bool,
+            typer.Option(
+                "--all-engines", "-a",
+                help="Run the restore wizard for each engine configured with PG_/MY_/MS_ prefixes, one after another.",
+            ),
+        ] = False,
         use_docker: Annotated[bool | None, _DOCKER_OPT] = None,
         db_type: Annotated[str | None, _DB_TYPE_OPT] = None,
         config_file: Annotated[Path | None, _CONFIG_OPT] = None,
 ) -> None:
-    """Interactively restore a database from a dump file (postgres | mariadb | mssql)."""
+    """Interactively restore a database from a dump file (postgres | mariadb | mssql).
+
+    Use --all-engines to step through the restore wizard for every engine
+    whose PG_/MY_/MS_ credentials are configured, one engine at a time.
+    """
     from .restore import run_restore
 
-    cfg = load_config(config_file)
+    _validate_db_type(db_type)
+    if all_engines:
+        configs = load_all_configs(config_file)
+        for cfg in configs:
+            _apply_docker_override(cfg, use_docker)
+        if len(configs) > 1:
+            console.print(
+                f"[bold cyan]Restoring {len(configs)} engine(s):[/] "
+                + ", ".join(c.db_type.value for c in configs)
+            )
+        for cfg in configs:
+            if len(configs) > 1:
+                console.print(f"\n[bold cyan]─── {cfg.db_type.value.upper()} ───[/]")
+            run_restore(cfg)
+        return
+
+    cfg = load_config(config_file, db_type_override=db_type)
     _apply_docker_override(cfg, use_docker)
-    _apply_db_type_override(cfg, db_type)
     run_restore(cfg)
+
+
+@app.command("drop")
+def drop(
+        use_docker: Annotated[bool | None, _DOCKER_OPT] = None,
+        db_type: Annotated[str | None, _DB_TYPE_OPT] = None,
+        config_file: Annotated[Path | None, _CONFIG_OPT] = None,
+) -> None:
+    """Interactively drop a database or schema.
+
+    Kills all active connections before dropping a database.
+    Schema drop uses CASCADE (removes all objects inside the schema).
+    Requires typing the name to confirm — operation is irreversible.
+    """
+    from .drop import run_drop
+
+    _validate_db_type(db_type)
+    cfg = load_config(config_file, db_type_override=db_type)
+    _apply_docker_override(cfg, use_docker)
+    run_drop(cfg)
 
 
 @app.command("test")
@@ -101,9 +166,9 @@ def test_connection(
     """Test the database connection and print resolved settings."""
     from .adapters import get_adapter
 
-    cfg = load_config(config_file)
+    _validate_db_type(db_type)
+    cfg = load_config(config_file, db_type_override=db_type)
     _apply_docker_override(cfg, use_docker)
-    _apply_db_type_override(cfg, db_type)
 
     pass_hint = f"{'*' * min(len(cfg.password), 6)}  ({len(cfg.password)} chars)" if cfg.password else "[red]NOT SET[/]"
     source = str(cfg.config_source) if cfg.config_source else "[red]none found — using defaults only[/]"
@@ -141,16 +206,16 @@ def init_config(
 ) -> None:
     """Create or update a .backup config file interactively."""
     from . import prompt as q
-    from .config import _find_config_file
+    from .config import _find_config_file, _parse_env_file
 
     output = output.resolve()
     updating = output.exists()
 
-    # Also check if there is an existing config elsewhere that we can pre-load
-    # when the target file doesn't exist yet (e.g. user runs init for the first time
-    # but a .backup was auto-discovered in a parent dir).
     existing_source: Path | None = output if updating else _find_config_file()
     existing_cfg = load_config(existing_source) if existing_source else None
+    existing_raw: dict[str, str] = (
+        _parse_env_file(existing_source) if existing_source and existing_source.is_file() else {}
+    )
 
     console.print()
     if updating:
@@ -164,6 +229,244 @@ def init_config(
 
     console.print(f"\n  Config will be written to: [bold]{output}[/]\n")
 
+    # ── Config mode ────────────────────────────────────────────────
+    console.rule("[bold cyan]Config mode[/]")
+    has_prefixed = any(
+        k.startswith(("PG_", "MY_", "MS_")) for k in existing_raw
+    )
+    mode: str = q.select(
+        "Configuration mode",
+        choices=[
+            q.Choice("Single-engine  (DB_TYPE + DB_* keys)", value="single"),
+            q.Choice("Multi-engine   (PG_* / MY_* / MS_* keys, parallel backup)", value="multi"),
+        ],
+        default="multi" if has_prefixed else "single",
+    ).ask()
+
+    if mode == "multi":
+        _init_multi_engine(q, output, updating, existing_raw)
+    else:
+        _init_single_engine(q, output, updating, existing_cfg, existing_raw)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  init helpers
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _write_config(output: Path, lines: list[str], updating: bool) -> None:
+    output.write_text("\n".join(lines), encoding="utf-8")
+    try:
+        output.chmod(0o600)
+    except OSError:
+        pass
+    verb = "updated" if updating else "written"
+    console.print(f"\n[bold green]✓[/] Config {verb}: [bold]{output}[/]")
+    console.print("  [yellow]Note:[/] This file contains a plaintext password — keep it private.")
+    console.print(f"\n  Verify with: [bold]fuelrod-backup test --config {output}[/]\n")
+
+
+def _collect_engine_settings(q, engine: str, prefix: str, raw: dict[str, str]) -> dict[str, str]:
+    """Interactively collect per-engine connection settings, returning a key→value dict."""
+    if engine == "mariadb":
+        def_user, def_port, def_service = "root", "3306", "mariadb"
+    elif engine == "mssql":
+        def_user, def_port, def_service = "sa", "1433", "mssql"
+    else:
+        def_user, def_port, def_service = "postgres", "5432", "postgres"
+
+    def ex(short: str, default: str = "") -> str:
+        return raw.get(prefix + short, default)
+
+    console.print()
+    console.rule(f"[bold cyan]{engine.upper()} connection mode[/]")
+    use_docker: bool = q.select(
+        f"How does the tool connect to {engine}?",
+        choices=[
+            q.Choice("Docker  (exec into a running container)", value=True),
+            q.Choice("Direct  (host:port, no Docker)", value=False),
+        ],
+        default=ex("USE_DOCKER", "true").lower() in ("true", "1", "yes"),
+    ).ask()
+
+    if use_docker:
+        service = q.text(f"Container name ({prefix}SERVICE)", default=ex("SERVICE", def_service)).ask() or def_service
+        host = ex("HOST", "127.0.0.1")
+        port = ex("PORT", def_port)
+    else:
+        service = ex("SERVICE", def_service)
+        host = q.text(f"Host ({prefix}HOST)", default=ex("HOST", "127.0.0.1")).ask() or "127.0.0.1"
+        port = q.text(f"Port ({prefix}PORT)", default=ex("PORT", def_port)).ask() or def_port
+
+    console.print()
+    console.rule(f"[bold cyan]{engine.upper()} credentials[/]")
+    username = q.text(f"Username ({prefix}USERNAME)", default=ex("USERNAME", def_user)).ask() or def_user
+    ex_pass = ex("PASSWORD", "")
+    if ex_pass:
+        change = q.confirm("Change password? (current is set)", default=False).ask()
+        password = q.password(f"New password ({prefix}PASSWORD)").ask() or ex_pass if change else ex_pass
+    else:
+        password = q.password(f"Password ({prefix}PASSWORD)").ask() or ""
+
+    console.print()
+    console.rule(f"[bold cyan]{engine.upper()} advanced[/]")
+    settings: dict[str, str] = {
+        "USERNAME": username,
+        "PASSWORD": password,
+        "HOST": host,
+        "PORT": port,
+        "SERVICE": service,
+        "USE_DOCKER": "true" if use_docker else "false",
+    }
+
+    if engine == "postgres":
+        settings["DUMP_CMD"] = (
+            q.text(f"pg_dump command ({prefix}DUMP_CMD)", default=ex("DUMP_CMD", "pg_dump")).ask()
+            or "pg_dump"
+        )
+        settings["RESTORE_CMD"] = (
+            q.text(f"pg_restore command ({prefix}RESTORE_CMD)", default=ex("RESTORE_CMD", "pg_restore")).ask()
+            or "pg_restore"
+        )
+        settings["CMD"] = (
+            q.text(f"psql command ({prefix}CMD)", default=ex("CMD", "psql")).ask()
+            or "psql"
+        )
+    elif engine == "mariadb":
+        settings["DUMP_CMD"] = (
+            q.text(f"Dump command ({prefix}DUMP_CMD)", default=ex("DUMP_CMD", "mariadb-dump")).ask()
+            or "mariadb-dump"
+        )
+        settings["CMD"] = (
+            q.text(f"Client command ({prefix}CMD)", default=ex("CMD", "mysql")).ask()
+            or "mysql"
+        )
+    elif engine == "mssql":
+        settings["BACKUP_DIR"] = q.text(
+            f"Backup dir inside container ({prefix}BACKUP_DIR)",
+            default=ex("BACKUP_DIR", "/var/opt/mssql/backups"),
+        ).ask() or "/var/opt/mssql/backups"
+
+    return settings
+
+
+def _init_multi_engine(q, output: Path, updating: bool, existing_raw: dict[str, str]) -> None:
+    from .config import _ENGINE_PREFIXES
+
+    engine_labels = {
+        "postgres": "PostgreSQL",
+        "mariadb":  "MariaDB / MySQL",
+        "mssql":    "Microsoft SQL Server",
+    }
+    prefixes = dict(_ENGINE_PREFIXES)  # {engine: prefix}
+
+    # Pre-select engines that already have prefixed keys in the file
+    active = {e for e, p in prefixes.items() if any(k.startswith(p) for k in existing_raw)}
+
+    console.print()
+    console.rule("[bold cyan]Engines to configure[/]")
+    default_active = active or {"postgres"}
+    selected_engines: list[str] = q.checkbox(
+        "Select engines (Space to toggle, Enter to confirm)",
+        choices=[
+            q.Choice(title=engine_labels[e], value=e, checked=(e in default_active))
+            for e in prefixes
+        ],
+    ).ask() or []
+
+    if not selected_engines:
+        console.print("[yellow]No engines selected — aborted.[/]")
+        raise typer.Exit(0)
+
+    # Collect per-engine settings
+    engine_settings: dict[str, dict[str, str]] = {}
+    for engine in selected_engines:
+        prefix = prefixes[engine]
+        console.print(f"\n[bold cyan]━━━ {engine_labels[engine]} ({prefix}*) ━━━[/]")
+        engine_settings[engine] = _collect_engine_settings(q, engine, prefix, existing_raw)
+
+    # Shared settings
+    console.print()
+    console.rule("[bold cyan]Shared settings[/]")
+    ex_base    = existing_raw.get("BASE_DIR",          str(output.parent / "db-backup"))
+    ex_compress = existing_raw.get("COMPRESS_FILE",    "true")
+    ex_keep    = existing_raw.get("KEEP_DAYS",         "7")
+    ex_timeout = existing_raw.get("CONNECTION_TIMEOUT","30")
+
+    base_dir = q.text(
+        "Backup root directory (BASE_DIR)  [dim]/<engine> appended automatically[/]",
+        default=ex_base,
+    ).ask() or ex_base
+    compress: bool = q.confirm(
+        "Compress backups with gzip? (COMPRESS_FILE)",
+        default=ex_compress.lower() in ("true", "1", "yes"),
+    ).ask()
+    keep_days_str = q.text("Retain backups for N days — 0 = keep forever (KEEP_DAYS)", default=ex_keep).ask() or ex_keep
+    try:
+        keep_days = max(0, int(keep_days_str))
+    except ValueError:
+        keep_days = 7
+    timeout_str = q.text("Connection timeout in seconds (CONNECTION_TIMEOUT)", default=ex_timeout).ask() or ex_timeout
+    try:
+        conn_timeout = max(1, int(timeout_str))
+    except ValueError:
+        conn_timeout = 30
+
+    # Summary
+    console.print()
+    console.print(Panel("[bold]Config summary — multi-engine[/]", expand=False))
+    console.print(f"  Output file : [bold]{output}[/]")
+    console.print(f"  Engines     : [cyan]{', '.join(selected_engines)}[/]")
+    console.print(f"  Backup dir  : {base_dir}/<engine>/")
+    console.print(f"  Compress    : {compress}")
+    console.print(f"  Retain      : {keep_days} days")
+    console.print(f"  Timeout     : {conn_timeout}s")
+    for engine, settings in engine_settings.items():
+        mode_str = (
+            f"Docker — {settings['SERVICE']}"
+            if settings["USE_DOCKER"] == "true"
+            else f"Direct — {settings['HOST']}:{settings['PORT']}"
+        )
+        pass_display = "(set)" if settings["PASSWORD"] else "[red]NOT SET[/]"
+        console.print(f"  [{engine}] {mode_str}  user={settings['USERNAME']}  pass={pass_display}")
+    console.print()
+
+    action = "Update" if updating else "Write"
+    if not q.confirm(f"{action} config file?", default=True).ask():
+        console.print("[yellow]Aborted.[/]")
+        raise typer.Exit(0)
+
+    # Build file
+    engine_comment = {
+        "postgres": "PostgreSQL (PG_*)",
+        "mariadb":  "MariaDB / MySQL (MY_*)",
+        "mssql":    "MSSQL (MS_*)",
+    }
+    lines: list[str] = [
+        "# fuelrod-backup configuration — multi-engine mode",
+        f"# {'Updated' if updating else 'Generated'} by: fuelrod-backup init",
+        "#",
+        "# Run: fuelrod-backup backup --all-engines",
+        "",
+        "# ── Shared ──────────────────────────────────────────────────────",
+        f"BASE_DIR={base_dir}",
+        f"COMPRESS_FILE={'true' if compress else 'false'}",
+        f"KEEP_DAYS={keep_days}",
+        f"CONNECTION_TIMEOUT={conn_timeout}",
+        "",
+    ]
+
+    for engine in selected_engines:
+        prefix = prefixes[engine]
+        settings = engine_settings[engine]
+        lines += [f"# ── {engine_comment[engine]} ──────────────────────────────────────"]
+        for short, val in settings.items():
+            lines.append(f"{prefix}{short}={val}")
+        lines.append("")
+
+    _write_config(output, lines, updating)
+
+
+def _init_single_engine(q, output: Path, updating: bool, existing_cfg, existing_raw: dict[str, str]) -> None:
     # ── Engine ─────────────────────────────────────────────────────
     console.rule("[bold cyan]Database engine[/]")
     existing_db_type = existing_cfg.db_type.value if existing_cfg else "postgres"
@@ -177,17 +480,17 @@ def init_config(
         default=existing_db_type,
     ).ask()
 
-    # Per-engine hard defaults (used only when no existing value)
     if db_type == "mariadb":
         _def_user, _def_port, _def_service = "root", "3306", "mariadb"
         _def_dump_cmd, _def_client_cmd = "mariadb-dump", "mysql"
     elif db_type == "mssql":
         _def_user, _def_port, _def_service = "sa", "1433", "mssql"
+        _def_dump_cmd, _def_client_cmd = "", ""
     else:
         _def_user, _def_port, _def_service = "postgres", "5432", "postgres"
+        _def_dump_cmd, _def_client_cmd = "pg_dump", "psql"
 
-    # Pull existing values (fall back to engine defaults when absent)
-    ex = existing_cfg  # shorthand
+    ex = existing_cfg
     ex_use_docker = ex.use_docker if ex else True
     ex_service    = ex.service    if ex else _def_service
     ex_host       = ex.host       if ex else "127.0.0.1"
@@ -296,7 +599,6 @@ def init_config(
         console.print("[yellow]Aborted.[/]")
         raise typer.Exit(0)
 
-    # ── Write ──────────────────────────────────────────────────────
     lines: list[str] = [
         "# fuelrod-backup configuration",
         f"# {'Updated' if updating else 'Generated'} by: fuelrod-backup init",
@@ -347,15 +649,7 @@ def init_config(
             "",
         ]
 
-    output.write_text("\n".join(lines), encoding="utf-8")
-    try:
-        output.chmod(0o600)
-    except OSError:
-        pass  # Windows does not support Unix file permissions
-    verb = "updated" if updating else "written"
-    console.print(f"\n[bold green]✓[/] Config {verb}: [bold]{output}[/]")
-    console.print("  [yellow]Note:[/] This file contains a plaintext password — keep it private.")
-    console.print(f"\n  Verify with: [bold]fuelrod-backup test --config {output}[/]\n")
+    _write_config(output, lines, updating)
 
 
 @app.command("n8n-backup")
@@ -439,6 +733,119 @@ def gdrive_sync_cmd(
         age_days=days,
         include_patterns=list(include) or None,
         delete_local=not keep_local,
+    )
+
+
+@app.command("migrate")
+def migrate(
+        source_db: Annotated[
+            str | None,
+            typer.Option("--source-db", "-s", help="Source MariaDB database name."),
+        ] = None,
+        target_db: Annotated[
+            str | None,
+            typer.Option("--target-db", "-t", help="Target PostgreSQL database name (default: same as source)."),
+        ] = None,
+        target_schema: Annotated[
+            str,
+            typer.Option("--target-schema", help="PostgreSQL schema to migrate into."),
+        ] = "public",
+        batch_size: Annotated[
+            int,
+            typer.Option("--batch-size", "-b", help="Rows per INSERT batch."),
+        ] = 1000,
+        parallel: Annotated[
+            int,
+            typer.Option("--parallel", "-p", help="Number of tables to migrate in parallel."),
+        ] = 4,
+        dry_run: Annotated[
+            bool,
+            typer.Option("--dry-run", help="Show migration plan only — no writes."),
+        ] = False,
+        no_interactive: Annotated[
+            bool,
+            typer.Option("--no-interactive", "-n", help="Skip wizard prompts."),
+        ] = False,
+        validate: Annotated[
+            bool,
+            typer.Option("--validate/--no-validate", help="Run row count reconciliation after migration."),
+        ] = True,
+        validate_checksums: Annotated[
+            bool,
+            typer.Option("--validate-checksums", help="Also compare MD5 checksums (slower)."),
+        ] = False,
+        fail_fast: Annotated[
+            bool,
+            typer.Option("--fail-fast", help="Stop on first table failure."),
+        ] = False,
+        unsigned_checks: Annotated[
+            bool,
+            typer.Option("--unsigned-checks/--no-unsigned-checks", help="Generate CHECK >= 0 for UNSIGNED columns."),
+        ] = False,
+        enum_as_type: Annotated[
+            bool,
+            typer.Option(
+                "--enum-as-type/--enum-as-check",
+                help="Convert ENUM to PG CREATE TYPE (default: TEXT+CHECK).",
+            ),
+        ] = False,
+        skip_tables: Annotated[
+            list[str],
+            typer.Option("--skip-table", help="Table(s) to skip (repeatable)."),
+        ] = [],
+        only_tables: Annotated[
+            list[str],
+            typer.Option("--only-table", help="Migrate only these table(s) (repeatable)."),
+        ] = [],
+        report_file: Annotated[
+            Path | None,
+            typer.Option("--report", "-r", help="Write JSON migration report to this file."),
+        ] = None,
+        config_file: Annotated[Path | None, _CONFIG_OPT] = None,
+) -> None:
+    """Migrate one or more databases from MariaDB to PostgreSQL.
+
+    Requires both MY_* (source) and PG_* (target) credentials in .backup config.
+    Use --dry-run to preview the migration plan without writing any data.
+    """
+    from .config import DbType
+    from .migrate import run_migrate
+
+    all_cfgs = load_all_configs(config_file)
+    src_cfgs = [c for c in all_cfgs if c.db_type == DbType.MARIADB]
+    dst_cfgs = [c for c in all_cfgs if c.db_type == DbType.POSTGRES]
+
+    if not src_cfgs:
+        console.print(
+            "[bold red]ERROR:[/] No MariaDB source config found. "
+            "Set MY_USERNAME and MY_HOST in .backup (multi-engine mode)."
+        )
+        raise typer.Exit(code=1)
+    if not dst_cfgs:
+        console.print(
+            "[bold red]ERROR:[/] No PostgreSQL target config found. "
+            "Set PG_USERNAME and PG_HOST in .backup (multi-engine mode)."
+        )
+        raise typer.Exit(code=1)
+
+    run_migrate(
+        src_cfg=src_cfgs[0],
+        dst_cfg=dst_cfgs[0],
+        interactive=not no_interactive,
+        source_db=source_db,
+        target_db=target_db,
+        target_schema=target_schema,
+        batch_size=batch_size,
+        parallel=parallel,
+        dry_run=dry_run,
+        validate=validate,
+        validate_checksums=validate_checksums,
+        fail_fast=fail_fast,
+        unsigned_checks=unsigned_checks,
+        enum_as_type=enum_as_type,
+        skip_tables=list(skip_tables) or None,
+        only_tables=list(only_tables) or None,
+        report_file=report_file,
     )
 
 

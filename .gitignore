@@ -8,3 +8,11 @@ dist/
 .ruff_cache/
 .backup
 .claude
+akilimo_skipped_rows.json
+# IDE
+.idea/
+
+# OpenCode
+.oc/
+.idea/pyProjectModel.xml
+test-results.xml

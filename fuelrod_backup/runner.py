@@ -315,10 +315,15 @@ class PgRunner:
         return int(result or 0)
 
     def drop_db(self, dbname: str) -> None:
-        """Terminate active connections then drop the database."""
         self.terminate_connections(dbname)
         self._execute(
             pgsql.SQL("DROP DATABASE {}").format(pgsql.Identifier(dbname))
+        )
+
+    def drop_schema(self, dbname: str, schema: str) -> None:
+        self._execute(
+            pgsql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(pgsql.Identifier(schema)),
+            dbname=dbname,
         )
 
     def create_db(self, dbname: str, owner: str | None = None) -> None:

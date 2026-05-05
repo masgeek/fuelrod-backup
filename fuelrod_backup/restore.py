@@ -13,7 +13,8 @@ from pathlib import Path
 
 from rich.console import Console
 from rich.panel import Panel
-from rich.table import Table
+from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
+from rich.table import Column, Table
 
 from . import prompt as questionary
 from .adapters import get_adapter
@@ -490,7 +491,6 @@ def _execute_pg_restore(
         env["PGPASSWORD"] = cfg.password
 
     if backup_file.suffix == ".gz":
-        console.print("  Backup is gzipped — decompressing to temp file...")
         with tempfile.NamedTemporaryFile(suffix=".dump", delete=False) as tmp_file:
             tmp = Path(tmp_file.name)
         try:
@@ -544,10 +544,18 @@ def run_restore(cfg: Config) -> None:
 
     if adapter.supports_toc:
         _section("Analysing Dump")
-        with console.status("Reading table of contents..."):
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("{task.description}", table_column=Column(min_width=44)),
+            TimeElapsedColumn(),
+            console=console,
+        ) as _p:
+            _t = _p.add_task("[cyan]Reading table of contents…[/]", total=None)
             try:
                 toc = adapter.read_toc(backup_file)
+                _p.update(_t, description="[green]✓ TOC loaded[/]", total=1, completed=1)
             except subprocess.CalledProcessError as exc:
+                _p.update(_t, description="[red]✗ TOC read failed[/]", total=1, completed=1)
                 _die(f"Failed to read dump TOC: {exc}")
 
         meta_lines = [
@@ -619,54 +627,60 @@ def run_restore(cfg: Config) -> None:
 
     # ── Execute ────────────────────────────────────────────────────
     console.print()
-    console.print(f"  Starting restore of '[bold]{backup_file.name}[/]' → '[bold]{target_db}[/]'...")
-    console.print()
+    console.print(f"  Restoring [bold]{backup_file.name}[/] → [bold]{target_db}[/]")
 
-    try:
-        if adapter.supports_toc:
-            # PostgreSQL path — full control via pg_restore flags
-            restore_args: list[str] = []
-            restore_args += clean_args
-            restore_args += scope_args
-            restore_args += schema_args
-            restore_args += table_args
-            restore_args += role_args
-            if jobs > 1:
-                restore_args += ["-j", str(jobs)]
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("{task.description}", table_column=Column(min_width=44)),
+        TimeElapsedColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("[cyan]Preparing…[/]", total=None)
 
-            # Ensure all required schemas exist before pg_restore runs.
-            schemas_to_ensure = selected_schemas or _parse_schemas_from_toc(toc)
-            if schemas_to_ensure:
-                console.print(f"  Ensuring schemas exist: {', '.join(schemas_to_ensure)}")
-                adapter.ensure_schemas(target_db, schemas_to_ensure)
+        try:
+            if adapter.supports_toc:
+                restore_args: list[str] = []
+                restore_args += clean_args
+                restore_args += scope_args
+                restore_args += schema_args
+                restore_args += table_args
+                restore_args += role_args
+                if jobs > 1:
+                    restore_args += ["-j", str(jobs)]
 
-            console.print(f"  [dim]pg_restore {' '.join(restore_args)}[/]")
-            _execute_pg_restore(backup_file, target_db, restore_args, cfg)
-        else:
-            # MariaDB / MSSQL — adapter handles the mechanics
-            no_owner = "--no-owner" in role_args
-            adapter.restore_db(
-                target_db,
-                backup_file,
-                schemas=selected_schemas,
-                no_owner=no_owner,
-            )
+                schemas_to_ensure = selected_schemas or _parse_schemas_from_toc(toc)
+                if schemas_to_ensure:
+                    progress.update(task, description=f"[cyan]Ensuring {len(schemas_to_ensure)} schema(s)…[/]")
+                    adapter.ensure_schemas(target_db, schemas_to_ensure)
 
-    except subprocess.CalledProcessError as exc:
-        _die(f"Restore failed (exit {exc.returncode}). Check output above for details.")
-    except Exception as exc:
-        _die(f"Restore failed: {exc}")
+                progress.update(task, description=f"[cyan]Running pg_restore ({backup_file.name})…[/]")
+                _execute_pg_restore(backup_file, target_db, restore_args, cfg)
+            else:
+                progress.update(task, description=f"[cyan]Restoring {backup_file.name}…[/]")
+                no_owner = "--no-owner" in role_args
+                adapter.restore_db(
+                    target_db,
+                    backup_file,
+                    schemas=selected_schemas,
+                    no_owner=no_owner,
+                )
 
-    # ── Schema remapping (PG only) ────────────────────────────────
-    if adapter.supports_toc and schema_remap:
-        _section("Schema Remapping")
-        for src, dst in schema_remap.items():
-            console.print(f"  [cyan]{src}[/] → [bold]{dst}[/]...")
-            try:
-                adapter.remap_schema(src, dst, target_db)
-                console.print("  [green]Done.[/]")
-            except Exception as exc:  # noqa: BLE001
-                console.print(f"  [yellow]WARN:[/] remap failed: {exc}")
+            if adapter.supports_toc and schema_remap:
+                for src, dst in schema_remap.items():
+                    progress.update(task, description=f"[cyan]Remapping {src} → {dst}…[/]")
+                    try:
+                        adapter.remap_schema(src, dst, target_db)
+                    except Exception as exc:  # noqa: BLE001
+                        console.print(f"  [yellow]WARN:[/] remap {src} → {dst} failed: {exc}")
+
+            progress.update(task, description=f"[green]✓ Restore complete → {target_db}[/]", total=1, completed=1)
+
+        except subprocess.CalledProcessError as exc:
+            progress.update(task, description="[red]✗ Restore failed[/]", total=1, completed=1)
+            _die(f"Restore failed (exit {exc.returncode}). Check output above for details.")
+        except Exception as exc:
+            progress.update(task, description="[red]✗ Restore failed[/]", total=1, completed=1)
+            _die(f"Restore failed: {exc}")
 
     # ── Post-restore stats (PG only) ───────────────────────────────
     if adapter.supports_toc:

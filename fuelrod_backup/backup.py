@@ -6,12 +6,14 @@ import gzip
 import shutil
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
 from rich.console import Console
 from rich.panel import Panel
-from rich.table import Table
+from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
+from rich.table import Column, Table
 
 from . import prompt as questionary
 from .adapters import get_adapter
@@ -136,8 +138,16 @@ def _backup_one(
         db: str,
         cfg: Config,
         adapter: DbAdapter,
+        *,
+        progress=None,
+        task_id=None,
 ) -> Path:
     """Dump a single database. Returns the final dump file path."""
+
+    def _phase(desc: str) -> None:
+        if task_id is not None:
+            progress.update(task_id, description=desc)
+
     db_dir = Path(cfg.backup_dir) / db
     db_dir.mkdir(parents=True, exist_ok=True)
 
@@ -156,6 +166,7 @@ def _backup_one(
         mf.write(f"Docker    : {cfg.use_docker}\n")
         mf.write(f"Compressed: {cfg.compress}\n")
 
+    _phase(f"[cyan]{db}[/]  dumping…")
     adapter.backup_db(
         db,
         dump_file,
@@ -164,6 +175,7 @@ def _backup_one(
     )
 
     if cfg.compress and dump_file.suffix != ".bak":
+        _phase(f"[cyan]{db}[/]  compressing…")
         gz_file = Path(str(dump_file) + ".gz")
         with dump_file.open("rb") as f_in, gzip.open(gz_file, "wb", compresslevel=9) as f_out:
             shutil.copyfileobj(f_in, f_out)
@@ -172,7 +184,12 @@ def _backup_one(
 
     size = dump_file.stat().st_size
     human = f"{size / 1024 / 1024:.1f} MB" if size > 1024 * 1024 else f"{size / 1024:.1f} KB"
-    console.print(f"  [green]✓[/] {dump_file.name}  ([dim]{human}[/])")
+
+    if task_id is not None:
+        progress.update(task_id, description=f"[green]✓ {db}[/]  [dim]{human}[/]", completed=1)
+    else:
+        console.print(f"  [green]✓[/] {dump_file.name}  ([dim]{human}[/])")
+
     return dump_file
 
 
@@ -272,16 +289,146 @@ def run_backup(
 
     _section("Running Backup")
 
-    for db in dbs_to_backup:
-        console.print(f"\n  Backing up: [bold]{db}[/]")
-        try:
-            _backup_one(db, cfg, adapter)
-        except subprocess.CalledProcessError as exc:
-            _die(f"Backup failed for '{db}': exit code {exc.returncode}")
-        except Exception as exc:
-            _die(f"Backup failed for '{db}': {exc}")
+    n = len(dbs_to_backup)
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("{task.description}", table_column=Column(min_width=44)),
+        TimeElapsedColumn(),
+        console=console,
+    ) as progress:
+        overall = progress.add_task(f"[bold cyan]0/{n} databases[/]", total=n)
+        for i, db in enumerate(dbs_to_backup, 1):
+            task_id = progress.add_task(f"[dim]{db}[/]", total=1, completed=0)
+            try:
+                _backup_one(db, cfg, adapter, progress=progress, task_id=task_id)
+            except subprocess.CalledProcessError as exc:
+                progress.update(task_id, description=f"[red]✗ {db}[/]", completed=1)
+                _die(f"Backup failed for '{db}': exit code {exc.returncode}")
+            except Exception as exc:
+                progress.update(task_id, description=f"[red]✗ {db}[/]", completed=1)
+                _die(f"Backup failed for '{db}': {exc}")
+            progress.update(overall, advance=1, description=f"[bold cyan]{i}/{n} databases[/]")
 
     _cleanup_old(str(cfg.backup_dir), cfg.days_to_keep)
 
     console.print()
     console.print(Panel("[bold green]BACKUP COMPLETE[/]", expand=False))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  Parallel multi-engine entry point
+# ──────────────────────────────────────────────────────────────────────────────
+
+def run_parallel_backup(
+        configs: list[Config],
+        *,
+        databases: list[str] | None = None,
+        compress: bool | None = None,
+        keep_days: int | None = None,
+) -> None:
+    """Run non-interactive backups for every engine in *configs* in parallel.
+
+    Each engine's output is prefixed with ``[engine]`` so interleaved lines
+    remain readable.  A final summary table shows pass/fail per engine.
+    """
+    if len(configs) == 1:
+        run_backup(configs[0], interactive=False, databases=databases, compress=compress, keep_days=keep_days)
+        return
+
+    def _backup_engine(
+            cfg: Config,
+            progress: Progress,
+            task_id,
+    ) -> tuple[str, bool, str]:
+        engine = cfg.db_type.value
+
+        def _phase(desc: str) -> None:
+            progress.update(task_id, description=desc)
+
+        try:
+            if compress is not None:
+                cfg.compress = compress
+            if keep_days is not None:
+                cfg.days_to_keep = keep_days
+
+            if not cfg.password:
+                return engine, False, "password not set — check config"
+
+            adapter = get_adapter(cfg)
+            _phase(f"[cyan]{engine}[/]  connecting…")
+            try:
+                questionary.check_connection_with_countdown(adapter.check_connection, cfg.connection_timeout)
+            except TimeoutError as exc:
+                return engine, False, str(exc)
+
+            dbs_to_backup = databases or adapter.list_databases()
+            if not dbs_to_backup:
+                return engine, False, "no databases found"
+
+            if not cfg.base_dir:
+                return engine, False, "BASE_DIR not set"
+
+            Path(cfg.backup_dir).mkdir(parents=True, exist_ok=True)
+
+            n_dbs = len(dbs_to_backup)
+            progress.update(task_id, total=n_dbs, completed=0)
+            for i, db in enumerate(dbs_to_backup, 1):
+                _phase(f"[cyan]{engine}[/]  [{i}/{n_dbs}] dumping {db}…")
+                _backup_one(db, cfg, adapter)
+                progress.advance(task_id)
+
+            _cleanup_old(str(cfg.backup_dir), cfg.days_to_keep)
+            return engine, True, ""
+
+        except subprocess.CalledProcessError as exc:
+            return engine, False, f"subprocess exit {exc.returncode}"
+        except Exception as exc:
+            return engine, False, str(exc)
+
+    console.print(Panel(
+        f"[bold cyan]Parallel backup — {len(configs)} engine(s): "
+        f"{', '.join(c.db_type.value for c in configs)}[/]",
+        expand=False,
+    ))
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("{task.description}", table_column=Column(min_width=44)),
+        TimeElapsedColumn(),
+        console=console,
+    ) as progress:
+        with ThreadPoolExecutor(max_workers=len(configs)) as pool:
+            task_ids = {
+                cfg: progress.add_task(f"[dim]{cfg.db_type.value}[/]  starting…", total=None)
+                for cfg in configs
+            }
+            futures = {
+                pool.submit(_backup_engine, cfg, progress, task_ids[cfg]): cfg
+                for cfg in configs
+            }
+            results: list[tuple[str, bool, str]] = []
+            for fut in as_completed(futures):
+                engine, ok, err = fut.result()
+                cfg_done = futures[fut]
+                tid = task_ids[cfg_done]
+                if ok:
+                    progress.update(tid, description=f"[green]✓ {engine}[/]")
+                else:
+                    progress.update(tid, description=f"[red]✗ {engine}  {err}[/]", total=1, completed=1)
+                results.append((engine, ok, err))
+
+    console.print()
+    all_ok = True
+    for engine, ok, err in sorted(results):
+        if ok:
+            console.print(f"  [green]✓[/] {engine}")
+        else:
+            console.print(f"  [red]✗[/] {engine}: {err}")
+            all_ok = False
+
+    console.print()
+    if all_ok:
+        console.print(Panel("[bold green]ALL ENGINES COMPLETE[/]", expand=False))
+    else:
+        console.print(Panel("[bold red]SOME ENGINES FAILED — see output above[/]", expand=False))
+        sys.exit(1)
