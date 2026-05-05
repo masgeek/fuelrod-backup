@@ -72,7 +72,7 @@ class SqlTransformer:
             unsigned_stmts = self._generate_unsigned_checks(ddl, table_name, target_schema)
             post_ddl.extend(unsigned_stmts)
 
-        zerofill_cols = self._detect_zerofill(raw_ddl)
+        zerofill_cols = self._detect_zerofill(ddl)
         for col in zerofill_cols:
             warnings.append(
                 f"Column '{col}' had ZEROFILL — removed. "
@@ -282,7 +282,7 @@ class SqlTransformer:
             return fk
 
         ddl = re.sub(
-            r'FOREIGN\s+KEY[^,)]+REFERENCES[^,)]+(\([^)]+\))[^,)]*',
+            r'FOREIGN\s+KEY\s*\([^)]+\)\s*REFERENCES[^(]+\([^)]+\)[^,\n)]*',
             add_deferrable, ddl, flags=re.IGNORECASE,
         )
         return ddl
