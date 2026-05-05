@@ -691,5 +691,115 @@ def gdrive_sync_cmd(
     )
 
 
+@app.command("migrate")
+def migrate(
+        source_db: Annotated[
+            str | None,
+            typer.Option("--source-db", "-s", help="Source MariaDB database name."),
+        ] = None,
+        target_db: Annotated[
+            str | None,
+            typer.Option("--target-db", "-t", help="Target PostgreSQL database name (default: same as source)."),
+        ] = None,
+        target_schema: Annotated[
+            str,
+            typer.Option("--target-schema", help="PostgreSQL schema to migrate into."),
+        ] = "public",
+        batch_size: Annotated[
+            int,
+            typer.Option("--batch-size", "-b", help="Rows per INSERT batch."),
+        ] = 1000,
+        parallel: Annotated[
+            int,
+            typer.Option("--parallel", "-p", help="Number of tables to migrate in parallel."),
+        ] = 4,
+        dry_run: Annotated[
+            bool,
+            typer.Option("--dry-run", help="Show migration plan only — no writes."),
+        ] = False,
+        no_interactive: Annotated[
+            bool,
+            typer.Option("--no-interactive", "-n", help="Skip wizard prompts."),
+        ] = False,
+        validate: Annotated[
+            bool,
+            typer.Option("--validate/--no-validate", help="Run row count reconciliation after migration."),
+        ] = True,
+        validate_checksums: Annotated[
+            bool,
+            typer.Option("--validate-checksums", help="Also compare MD5 checksums (slower)."),
+        ] = False,
+        fail_fast: Annotated[
+            bool,
+            typer.Option("--fail-fast", help="Stop on first table failure."),
+        ] = False,
+        unsigned_checks: Annotated[
+            bool,
+            typer.Option("--unsigned-checks/--no-unsigned-checks", help="Generate CHECK >= 0 for UNSIGNED columns."),
+        ] = False,
+        enum_as_type: Annotated[
+            bool,
+            typer.Option("--enum-as-type/--enum-as-check", help="Convert ENUM to PG CREATE TYPE (default: TEXT+CHECK)."),
+        ] = False,
+        skip_tables: Annotated[
+            list[str],
+            typer.Option("--skip-table", help="Table(s) to skip (repeatable)."),
+        ] = [],
+        only_tables: Annotated[
+            list[str],
+            typer.Option("--only-table", help="Migrate only these table(s) (repeatable)."),
+        ] = [],
+        report_file: Annotated[
+            Path | None,
+            typer.Option("--report", "-r", help="Write JSON migration report to this file."),
+        ] = None,
+        config_file: Annotated[Path | None, _CONFIG_OPT] = None,
+) -> None:
+    """Migrate one or more databases from MariaDB to PostgreSQL.
+
+    Requires both MY_* (source) and PG_* (target) credentials in .backup config.
+    Use --dry-run to preview the migration plan without writing any data.
+    """
+    from .config import DbType
+    from .migrate import run_migrate
+
+    all_cfgs = load_all_configs(config_file)
+    src_cfgs = [c for c in all_cfgs if c.db_type == DbType.MARIADB]
+    dst_cfgs = [c for c in all_cfgs if c.db_type == DbType.POSTGRES]
+
+    if not src_cfgs:
+        console.print(
+            "[bold red]ERROR:[/] No MariaDB source config found. "
+            "Set MY_USERNAME and MY_HOST in .backup (multi-engine mode)."
+        )
+        raise typer.Exit(code=1)
+    if not dst_cfgs:
+        console.print(
+            "[bold red]ERROR:[/] No PostgreSQL target config found. "
+            "Set PG_USERNAME and PG_HOST in .backup (multi-engine mode)."
+        )
+        raise typer.Exit(code=1)
+
+    run_migrate(
+        src_cfg=src_cfgs[0],
+        dst_cfg=dst_cfgs[0],
+        interactive=not no_interactive,
+        source_db=source_db,
+        target_db=target_db,
+        target_schema=target_schema,
+        batch_size=batch_size,
+        parallel=parallel,
+        dry_run=dry_run,
+        validate=validate,
+        validate_checksums=validate_checksums,
+        fail_fast=fail_fast,
+        unsigned_checks=unsigned_checks,
+        enum_as_type=enum_as_type,
+        skip_tables=list(skip_tables) or None,
+        only_tables=list(only_tables) or None,
+        report_file=report_file,
+    )
+
+
 if __name__ == "__main__":
     app()
