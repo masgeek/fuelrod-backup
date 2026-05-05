@@ -46,7 +46,7 @@ class Validator:
         result = ValidationResult(table=table)
         try:
             result.rows_source = int(
-                src_adapter._query_one(f"SELECT COUNT(*) FROM `{table}`", dbname=src_db)
+                src_adapter._query_one(f"SELECT COUNT(*) FROM `{table}`", dbname=src_db)  # noqa: S608
             )
         except Exception as exc:
             result.errors.append(f"source count error: {exc}")
@@ -55,7 +55,7 @@ class Validator:
         try:
             result.rows_dest = int(
                 pg_runner._query_one(
-                    f'SELECT COUNT(*) FROM "{target_schema}"."{table}"',
+                    f'SELECT COUNT(*) FROM "{target_schema}"."{table}"',  # noqa: S608
                     dbname=dst_db,
                 )
             )
@@ -99,13 +99,13 @@ class Validator:
         concat_sep = "|"
 
         sql_src = (
-            f"SELECT MD5(GROUP_CONCAT("
+            f"SELECT MD5(GROUP_CONCAT("  # noqa: S608
             f"MD5(CONCAT_WS('{concat_sep}', {cols_src})) "
             f"ORDER BY {pk_order_src}"
             f")) AS chk FROM `{table}`"
         )
         sql_dst = (
-            f"SELECT MD5(STRING_AGG("
+            f"SELECT MD5(STRING_AGG("  # noqa: S608
             f"MD5(CONCAT_WS('{concat_sep}', {cols_dst})), "
             f"'' ORDER BY {pk_order_dst}"
             f")) AS chk FROM \"{target_schema}\".\"{table}\""

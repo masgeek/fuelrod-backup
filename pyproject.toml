@@ -71,7 +71,6 @@ select = [
 ignore = [
     "S603", # subprocess call — reviewed; list form is used throughout (no shell=True)
     "S607", # partial executable path — docker/pg_dump/mysqldump are expected on PATH
-    "S608", # SQL injection — queries use schema/table names from internal metadata, not user input
 ]
 
 [tool.ruff.lint.per-file-ignores]
