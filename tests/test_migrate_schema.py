@@ -15,9 +15,12 @@ def _make_adapter(
     trigger_rows=None,
     routine_rows=None,
 ):
+    _keys = ("SCHEMATA", "TABLES", "COLUMNS", "STATISTICS", "KEY_COLUMN_USAGE", "VIEWS", "TRIGGERS", "ROUTINES")
     adapter = MagicMock()
     adapter._query_rows.side_effect = lambda sql, params=(), **kw: {
-        "SCHEMATA": schemata_rows or [{"DEFAULT_CHARACTER_SET_NAME": "utf8mb4", "DEFAULT_COLLATION_NAME": "utf8mb4_unicode_ci"}],
+        "SCHEMATA": schemata_rows or [
+            {"DEFAULT_CHARACTER_SET_NAME": "utf8mb4", "DEFAULT_COLLATION_NAME": "utf8mb4_unicode_ci"}
+        ],
         "TABLES": table_rows or [],
         "COLUMNS": col_rows or [],
         "STATISTICS": idx_rows or [],
@@ -25,7 +28,7 @@ def _make_adapter(
         "VIEWS": view_rows or [],
         "TRIGGERS": trigger_rows or [],
         "ROUTINES": routine_rows or [],
-    }.get(next((k for k in ("SCHEMATA","TABLES","COLUMNS","STATISTICS","KEY_COLUMN_USAGE","VIEWS","TRIGGERS","ROUTINES") if k in sql.upper()), ""), [])
+    }.get(next((k for k in _keys if k in sql.upper()), ""), [])
     return adapter
 
 
@@ -53,7 +56,9 @@ class TestSchemaExtractor:
     def test_extract_returns_database_schema(self):
         adapter = _make_adapter(
             table_rows=[{"TABLE_NAME": "users", "TABLE_COMMENT": "", "AUTO_INCREMENT": None}],
-            col_rows=[_col_row("id", "int", "int(11)", nullable="NO", key="PRI", extra="auto_increment", char_len=None)],
+            col_rows=[_col_row(
+                "id", "int", "int(11)", nullable="NO", key="PRI", extra="auto_increment", char_len=None,
+            )],
         )
         extractor = SchemaExtractor(adapter)
         schema = extractor.extract("mydb")
@@ -85,7 +90,9 @@ class TestSchemaExtractor:
     def test_auto_increment_start_captured(self):
         adapter = _make_adapter(
             table_rows=[{"TABLE_NAME": "orders", "TABLE_COMMENT": "", "AUTO_INCREMENT": 1001}],
-            col_rows=[_col_row("id", "int", "int(11)", nullable="NO", key="PRI", extra="auto_increment", char_len=None)],
+            col_rows=[_col_row(
+                "id", "int", "int(11)", nullable="NO", key="PRI", extra="auto_increment", char_len=None,
+            )],
         )
         extractor = SchemaExtractor(adapter)
         schema = extractor.extract("db")
@@ -132,7 +139,9 @@ class TestSchemaGenerator:
 
     def test_generated_ddl_contains_table_name(self):
         tdef = TableDef(name="users", columns=[
-            ColumnDef("id", 1, "int", "int(11)", False, False, None, "auto_increment", "PRI", "", None, None, None, None),
+            ColumnDef(
+                "id", 1, "int", "int(11)", False, False, None, "auto_increment", "PRI", "", None, None, None, None,
+            ),
         ])
         gen = SchemaGenerator(target_schema="public")
         result = gen.generate(
@@ -145,7 +154,9 @@ class TestSchemaGenerator:
     def test_identity_column_generated(self):
         from fuelrod_backup.migrate.schema import DatabaseSchema
         tdef = TableDef(name="t", columns=[
-            ColumnDef("id", 1, "int", "int(11)", False, False, None, "auto_increment", "PRI", "", None, None, None, None),
+            ColumnDef(
+                "id", 1, "int", "int(11)", False, False, None, "auto_increment", "PRI", "", None, None, None, None,
+            ),
         ])
         gen = SchemaGenerator()
         result = gen.generate(DatabaseSchema(name="db", tables=[tdef]))
@@ -164,7 +175,10 @@ class TestSchemaGenerator:
     def test_enum_check_in_post_data(self):
         from fuelrod_backup.migrate.schema import DatabaseSchema
         tdef = TableDef(name="t", columns=[
-            ColumnDef("status", 1, "enum", "enum('active','inactive')", False, False, None, "", "", "", None, None, None, None),
+            ColumnDef(
+                "status", 1, "enum", "enum('active','inactive')",
+                False, False, None, "", "", "", None, None, None, None,
+            ),
         ])
         gen = SchemaGenerator()
         result = gen.generate(DatabaseSchema(name="db", tables=[tdef]))
