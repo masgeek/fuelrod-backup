@@ -544,7 +544,12 @@ def run_restore(cfg: Config) -> None:
 
     if adapter.supports_toc:
         _section("Analysing Dump")
-        with Progress(SpinnerColumn(), TextColumn("{task.description}", table_column=Column(min_width=44)), TimeElapsedColumn(), console=console) as _p:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("{task.description}", table_column=Column(min_width=44)),
+            TimeElapsedColumn(),
+            console=console,
+        ) as _p:
             _t = _p.add_task("[cyan]Reading table of contents…[/]", total=None)
             try:
                 toc = adapter.read_toc(backup_file)

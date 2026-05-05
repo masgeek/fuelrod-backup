@@ -213,7 +213,9 @@ def init_config(
 
     existing_source: Path | None = output if updating else _find_config_file()
     existing_cfg = load_config(existing_source) if existing_source else None
-    existing_raw: dict[str, str] = _parse_env_file(existing_source) if existing_source and existing_source.is_file() else {}
+    existing_raw: dict[str, str] = (
+        _parse_env_file(existing_source) if existing_source and existing_source.is_file() else {}
+    )
 
     console.print()
     if updating:
@@ -317,12 +319,27 @@ def _collect_engine_settings(q, engine: str, prefix: str, raw: dict[str, str]) -
     }
 
     if engine == "postgres":
-        settings["DUMP_CMD"]    = q.text(f"pg_dump command ({prefix}DUMP_CMD)",    default=ex("DUMP_CMD", "pg_dump")).ask()    or "pg_dump"
-        settings["RESTORE_CMD"] = q.text(f"pg_restore command ({prefix}RESTORE_CMD)", default=ex("RESTORE_CMD", "pg_restore")).ask() or "pg_restore"
-        settings["CMD"]         = q.text(f"psql command ({prefix}CMD)",             default=ex("CMD", "psql")).ask()            or "psql"
+        settings["DUMP_CMD"] = (
+            q.text(f"pg_dump command ({prefix}DUMP_CMD)", default=ex("DUMP_CMD", "pg_dump")).ask()
+            or "pg_dump"
+        )
+        settings["RESTORE_CMD"] = (
+            q.text(f"pg_restore command ({prefix}RESTORE_CMD)", default=ex("RESTORE_CMD", "pg_restore")).ask()
+            or "pg_restore"
+        )
+        settings["CMD"] = (
+            q.text(f"psql command ({prefix}CMD)", default=ex("CMD", "psql")).ask()
+            or "psql"
+        )
     elif engine == "mariadb":
-        settings["DUMP_CMD"] = q.text(f"Dump command ({prefix}DUMP_CMD)",   default=ex("DUMP_CMD", "mariadb-dump")).ask() or "mariadb-dump"
-        settings["CMD"]      = q.text(f"Client command ({prefix}CMD)",       default=ex("CMD", "mysql")).ask()             or "mysql"
+        settings["DUMP_CMD"] = (
+            q.text(f"Dump command ({prefix}DUMP_CMD)", default=ex("DUMP_CMD", "mariadb-dump")).ask()
+            or "mariadb-dump"
+        )
+        settings["CMD"] = (
+            q.text(f"Client command ({prefix}CMD)", default=ex("CMD", "mysql")).ask()
+            or "mysql"
+        )
     elif engine == "mssql":
         settings["BACKUP_DIR"] = q.text(
             f"Backup dir inside container ({prefix}BACKUP_DIR)",
@@ -379,7 +396,10 @@ def _init_multi_engine(q, output: Path, updating: bool, existing_raw: dict[str, 
         "Backup root directory (BASE_DIR)  [dim]/<engine> appended automatically[/]",
         default=ex_base,
     ).ask() or ex_base
-    compress: bool = q.confirm("Compress backups with gzip? (COMPRESS_FILE)", default=ex_compress.lower() in ("true","1","yes")).ask()
+    compress: bool = q.confirm(
+        "Compress backups with gzip? (COMPRESS_FILE)",
+        default=ex_compress.lower() in ("true", "1", "yes"),
+    ).ask()
     keep_days_str = q.text("Retain backups for N days — 0 = keep forever (KEEP_DAYS)", default=ex_keep).ask() or ex_keep
     try:
         keep_days = max(0, int(keep_days_str))
@@ -401,8 +421,13 @@ def _init_multi_engine(q, output: Path, updating: bool, existing_raw: dict[str, 
     console.print(f"  Retain      : {keep_days} days")
     console.print(f"  Timeout     : {conn_timeout}s")
     for engine, settings in engine_settings.items():
-        mode_str = f"Docker — {settings['SERVICE']}" if settings["USE_DOCKER"] == "true" else f"Direct — {settings['HOST']}:{settings['PORT']}"
-        console.print(f"  [{engine}] {mode_str}  user={settings['USERNAME']}  pass={'(set)' if settings['PASSWORD'] else '[red]NOT SET[/]'}")
+        mode_str = (
+            f"Docker — {settings['SERVICE']}"
+            if settings["USE_DOCKER"] == "true"
+            else f"Direct — {settings['HOST']}:{settings['PORT']}"
+        )
+        pass_display = "(set)" if settings["PASSWORD"] else "[red]NOT SET[/]"
+        console.print(f"  [{engine}] {mode_str}  user={settings['USERNAME']}  pass={pass_display}")
     console.print()
 
     action = "Update" if updating else "Write"
@@ -759,7 +784,10 @@ def migrate(
         ] = False,
         enum_as_type: Annotated[
             bool,
-            typer.Option("--enum-as-type/--enum-as-check", help="Convert ENUM to PG CREATE TYPE (default: TEXT+CHECK)."),
+            typer.Option(
+                "--enum-as-type/--enum-as-check",
+                help="Convert ENUM to PG CREATE TYPE (default: TEXT+CHECK).",
+            ),
         ] = False,
         skip_tables: Annotated[
             list[str],
