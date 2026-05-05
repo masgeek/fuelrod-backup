@@ -15,7 +15,7 @@ _LARGE_TABLE_THRESHOLD = 1_000_000
 
 # Types that need Python-side coercion before PostgreSQL insertion
 _NEEDS_COERCION = frozenset({
-    "json", "tinyint",
+    "json", "tinyint", "bit",
     "tinyblob", "blob", "mediumblob", "longblob", "binary", "varbinary",
 })
 
@@ -34,6 +34,8 @@ class DataMigrator:
         target_schema: str = "public",
         batch_size: int = 1000,
         skipped_log: Path | None = None,
+        progress=None,   # rich.progress.Progress | None
+        overall_task=None,  # TaskID for the overall tables counter
     ) -> TableResult:
         import pymysql
         import pymysql.cursors
@@ -50,14 +52,23 @@ class DataMigrator:
 
         needs_coerce = any(c.data_type.lower() in _NEEDS_COERCION for c in insert_columns)
 
+        # Reserve a progress row immediately so the table appears in the display
+        task_id = None
+        if progress is not None:
+            task_id = progress.add_task(f"[dim]{table}[/]", total=None)
+
         # Count source rows
         try:
             src_count_raw = self._src_count(table, src_db, src_cfg)
             result.rows_source = src_count_raw
+            if task_id is not None:
+                progress.update(task_id, total=max(src_count_raw, 1))
         except Exception as exc:
             result.status = "failed"
             result.error = f"source count failed: {exc}"
             result.duration_s = time.monotonic() - t_start
+            if task_id is not None:
+                progress.update(task_id, description=f"[red]✗ {table}[/]", total=1, completed=1)
             return result
 
         # Open source connection with REPEATABLE READ snapshot
@@ -67,6 +78,8 @@ class DataMigrator:
             result.status = "failed"
             result.error = f"source connection failed: {exc}"
             result.duration_s = time.monotonic() - t_start
+            if task_id is not None:
+                progress.update(task_id, description=f"[red]✗ {table}[/]", completed=1)
             return result
 
         skipped_rows: list[dict] = []
@@ -81,6 +94,8 @@ class DataMigrator:
                     f"SELECT {', '.join('`' + c + '`' for c in all_col_names)} "
                     f"FROM `{table}`"
                 )
+                if task_id is not None:
+                    progress.update(task_id, description=f"[cyan]{table}[/]")
                 batch: list[tuple] = []
                 while True:
                     row = cur.fetchone()
@@ -93,6 +108,8 @@ class DataMigrator:
                             )
                             inserted += ok
                             skipped_rows.extend(skip)
+                            if task_id is not None:
+                                progress.advance(task_id, ok)
                         break
                     batch.append(row)
                     if len(batch) >= batch_size:
@@ -103,6 +120,8 @@ class DataMigrator:
                         )
                         inserted += ok
                         skipped_rows.extend(skip)
+                        if task_id is not None:
+                            progress.advance(task_id, ok)
                         batch = []
         except Exception as exc:
             result.status = "failed"
@@ -116,6 +135,15 @@ class DataMigrator:
 
         if result.status != "failed":
             result.status = "partial" if skipped_rows else "ok"
+
+        if task_id is not None:
+            if result.status == "ok":
+                progress.update(task_id, description=f"[green]✓ {table}[/]", completed=inserted)
+            elif result.status == "partial":
+                skipped = len(skipped_rows)
+                progress.update(task_id, description=f"[yellow]⚠ {table} ({skipped} skipped)[/]", completed=inserted)
+            else:
+                progress.update(task_id, description=f"[red]✗ {table}[/]", completed=max(inserted, 1))
 
         return result
 
@@ -242,6 +270,10 @@ class DataMigrator:
                     result.append(json.dumps(parsed))
                 else:
                     result.append(json.dumps(value))
+            elif dt == "bit":
+                # PyMySQL returns BIT(n) as bytes; store as BOOLEAN
+                raw = bytes(value) if not isinstance(value, bytes) else value
+                result.append(bool(int.from_bytes(raw, "big")))
             elif dt in ("tinyblob", "blob", "mediumblob", "longblob", "binary", "varbinary"):
                 result.append(bytes(value) if not isinstance(value, bytes) else value)
             else:

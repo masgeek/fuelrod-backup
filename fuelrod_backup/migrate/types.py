@@ -70,9 +70,7 @@ class TypeMapper:
 
         # ── Bit ──────────────────────────────────────────────────────────────
         if dt == "bit":
-            m = re.search(r"bit\((\d+)\)", ct)
-            n = m.group(1) if m else "1"
-            return f"BIT({n})", warnings
+            return "BOOLEAN", warnings
 
         # ── Character types ──────────────────────────────────────────────────
         if dt == "char":

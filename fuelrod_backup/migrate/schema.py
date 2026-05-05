@@ -506,10 +506,10 @@ class SchemaGenerator:
             if stripped in ("0", "FALSE", "false"):
                 return " DEFAULT FALSE"
 
-        # ── BIT literal: b'0' → '0'::bit ─────────────────────────────────────
+        # ── BIT literal: b'0' → false, b'1' → true (BIT columns map to BOOLEAN)
         if stripped.startswith("b'") and stripped.endswith("'"):
             bits = stripped[2:-1]
-            return f" DEFAULT '{bits}'::bit"
+            return f" DEFAULT {'true' if int(bits or '0', 2) else 'false'}"
 
         # ── Numeric literals — emit unquoted ──────────────────────────────────
         try:

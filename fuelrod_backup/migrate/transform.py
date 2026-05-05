@@ -195,7 +195,8 @@ class SqlTransformer:
 
     @staticmethod
     def _rewrite_bit_default(ddl: str) -> str:
-        return re.sub(r"DEFAULT\s+b'(\d+)'", lambda m: f"DEFAULT '{m.group(1)}'::bit", ddl)
+        # BIT columns are mapped to BOOLEAN; b'0' → false, anything else → true
+        return re.sub(r"DEFAULT\s+b'(\d+)'", lambda m: f"DEFAULT {'true' if int(m.group(1)) else 'false'}", ddl)
 
     @staticmethod
     def _strip_on_update(ddl: str, table_name: str) -> tuple[str, list[str]]:
