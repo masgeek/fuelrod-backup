@@ -8,3 +8,4 @@ dist/
 .ruff_cache/
 .backup
 .claude
+akilimo_skipped_rows.json
