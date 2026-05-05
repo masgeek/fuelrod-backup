@@ -113,7 +113,8 @@ class TestTableFailure:
         call_count = {"n": 0}
 
         def _fake_migrate_table(self, table, columns, src_cfg, dst_runner, src_db, dst_db,
-                                target_schema="public", batch_size=1000, skipped_log=None):
+                                target_schema="public", batch_size=1000, skipped_log=None,
+                                progress=None, overall_task=None):
             from fuelrod_backup.migrate.report import TableResult
             call_count["n"] += 1
             if table == "a":
@@ -150,7 +151,8 @@ class TestTableFailure:
         attempted = {"n": 0}
 
         def _fake(self, table, columns, src_cfg, dst_runner, src_db, dst_db,
-                  target_schema="public", batch_size=1000, skipped_log=None):
+                  target_schema="public", batch_size=1000, skipped_log=None,
+                  progress=None, overall_task=None):
             from fuelrod_backup.migrate.report import TableResult
             attempted["n"] += 1
             return TableResult(table=table, status="failed", error="fail")
