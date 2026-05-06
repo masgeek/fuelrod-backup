@@ -108,9 +108,10 @@ def _find_config_file() -> Path | None:
     """
     Search for a config file, checking these locations in order:
 
-    1. Current working directory  (.backup then .env)
-    2. Package project directory  (.backup then .env)
-    3. Repo root / one level up   (.backup then .env)
+    1. User home directory (~/)   (.backup then .env) — Linux only
+    2. Current working directory  (.backup then .env)
+    3. Package project directory  (.backup then .env)
+    4. Repo root / one level up   (.backup then .env)
 
     Returns the first file found, or None.
     """
@@ -118,7 +119,15 @@ def _find_config_file() -> Path | None:
     repo_root = pkg_dir.parent  # proxy-tool/
     cwd = Path.cwd()
 
-    search_dirs = [cwd, pkg_dir]
+    search_dirs: list[Path] = []
+    if os.name == "posix":
+        home = Path.home()
+        if home not in (cwd, pkg_dir):
+            search_dirs.append(home)
+
+    search_dirs.append(cwd)
+    if pkg_dir not in search_dirs:
+        search_dirs.append(pkg_dir)
     if repo_root != cwd and repo_root != pkg_dir:
         search_dirs.append(repo_root)
 
