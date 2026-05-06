@@ -14,7 +14,7 @@ on:
 
 jobs:
   lint:
-    name: Ruff
+    name: lint
     runs-on: ubuntu-latest
     concurrency:
       group: lint-${{ github.head_ref || github.ref_name }}
