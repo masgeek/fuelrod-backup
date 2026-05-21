@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from typing import Annotated
 
@@ -11,11 +12,30 @@ from rich.panel import Panel
 
 from .config import DbType, load_all_configs, load_config
 
+_VERSION = _pkg_version("fuelrod-backup")
+
+
+def _version_callback(value: bool) -> None:
+    if value:
+        typer.echo(f"fuelrod-backup {_VERSION}")
+        raise typer.Exit()
+
+
 app = typer.Typer(
     name="fuelrod-backup",
     help="Interactive database backup and restore tool (PostgreSQL, MariaDB, MSSQL).",
     add_completion=False,
 )
+
+
+@app.callback()
+def _main(
+    version: Annotated[
+        bool,
+        typer.Option("--version", "-V", callback=_version_callback, is_eager=True, help="Show version and exit."),
+    ] = False,
+) -> None:
+    pass
 console = Console()
 
 # Reusable option definitions
