@@ -107,7 +107,14 @@ Interactive or non-interactive backup with optional retention cleanup.
 
 ### `restore`
 
-Interactive restore with engine-specific options. PostgreSQL includes TOC analysis for schema, table, and role filtering.
+Interactive restore wizard with engine-specific options. PostgreSQL includes TOC analysis for schema, table, and role filtering.
+
+The wizard navigates the backup directory in four steps:
+
+1. **Project directory** — pick a top-level folder under `BASE_DIR` (e.g. `akilimo`, `fuelrod`)
+2. **Engine directory** — auto-resolved from `DB_TYPE` (e.g. `postgres`, `mariadb`) — no prompt
+3. **Database** — pick the database folder within the engine directory
+4. **Backup file** — pick from files in that database folder only
 
 - `--all-engines, -a` — restore all engines sequentially (multi-engine config)
 - `--docker / --no-docker`
@@ -186,9 +193,10 @@ For each directory below, files are checked in this order: `.backup`, `.env`, `.
 
 Directories searched:
 
-1. current working directory
-2. project directory
-3. parent repo directory
+1. home directory (`~/`) — Linux/macOS only
+2. current working directory
+3. package directory
+4. parent repo directory
 
 ### Required keys
 
@@ -236,12 +244,25 @@ MSSQL:
 
 ## Output layout
 
+Backups are written under a project folder, then engine type, then database name:
+
 ```
 <BASE_DIR>/
-  postgres/<database>/<YYYYMMDD-HHMMSS>.dump[.gz]
-  mariadb/<database>/<YYYYMMDD-HHMMSS>.sql[.gz]
-  mssql/<database>/<YYYYMMDD-HHMMSS>.bak
+  <project>/
+    postgres/
+      <database>/
+        <database>_<YYYYMMDD_HHMMSS>.dump[.gz]
+    mariadb/
+      <database>/
+        <database>_<YYYYMMDD_HHMMSS>.sql[.gz]
+    mssql/
+      <database>/
+        <database>_<YYYYMMDD_HHMMSS>.bak
 ```
+
+The `<project>` folder is determined by how `BASE_DIR` is set per project. Set `BASE_DIR` to the root that contains all project folders and the restore wizard will let you navigate from there.
+
+The restore wizard searches from `BASE_DIR`, not `BASE_DIR/<engine>`, so the directory does not need to exist at that path.
 
 ## Notes
 
@@ -256,11 +277,11 @@ GNU General Public License v3.0 or later. See [LICENSE](LICENSE).
 
 ## Breaking Change
 
-Connection variables are now engine-agnostic only:
+Single-engine mode uses engine-agnostic connection keys only:
 
 - `DB_USERNAME`
 - `DB_PASSWORD`
 - `DB_HOST`
 - `DB_PORT`
 
-Legacy connection keys (`PG_USERNAME`, `PG_PASSWORD`, `PG_HOST`, `PG_PORT`) are no longer loaded.
+The legacy single-engine keys `PG_USERNAME`, `PG_PASSWORD`, `PG_HOST`, `PG_PORT` are no longer loaded in single-engine mode. Use the engine-prefixed keys (`PG_*`, `MY_*`, `MS_*`) only in multi-engine mode together with `--all-engines`.
