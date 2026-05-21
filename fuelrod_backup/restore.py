@@ -539,6 +539,68 @@ def _execute_pg_restore(
 #  Public entry point
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _execute_pg_restore_v2(
+        backup_file: Path,
+        target_db: str,
+        restore_args: list[str],
+        cfg: Config,
+) -> None:
+    """Restore a dump via a real file path so pg_restore parallelism can work."""
+    base_args = [
+                    "-U", cfg.user,
+                    "-h", cfg.host,
+                    "-p", str(cfg.port),
+                    "-d", target_db,
+                    "-v",
+                ] + restore_args
+    work_file = backup_file
+    tmp_plain: Path | None = None
+    ctr_path: str | None = None
+
+    try:
+        if backup_file.suffix == ".gz":
+            with tempfile.NamedTemporaryFile(suffix=".dump", delete=False) as tmp_file:
+                tmp_plain = Path(tmp_file.name)
+            with gzip.open(backup_file, "rb") as gz_in, tmp_plain.open("wb") as f_out:
+                shutil.copyfileobj(gz_in, f_out)
+            work_file = tmp_plain
+
+        if cfg.use_docker:
+            ctr_path = f"/tmp/pg_restore_{work_file.stem}.dump"  # noqa: S108
+            subprocess.run(
+                ["docker", "cp", str(work_file), f"{cfg.service}:{ctr_path}"],
+                check=True,
+            )
+            subprocess.run(
+                [
+                    "docker", "exec", "-i",
+                    "-e", f"PGPASSWORD={cfg.password}",
+                    "-e", f"PGUSER={cfg.user}",
+                    cfg.service,
+                    cfg.pg_restore_cmd,
+                    *base_args,
+                    ctr_path,
+                ],
+                check=True,
+            )
+        else:
+            env = os.environ.copy()
+            env["PGPASSWORD"] = cfg.password
+            subprocess.run(
+                [cfg.pg_restore_cmd, *base_args, str(work_file)],
+                env=env,
+                check=True,
+            )
+    finally:
+        if ctr_path:
+            subprocess.run(
+                ["docker", "exec", cfg.service, "rm", "-f", ctr_path],
+                check=False,
+            )
+        if tmp_plain and tmp_plain.exists():
+            tmp_plain.unlink()
+
+
 def run_restore(cfg: Config) -> None:
     """Main restore workflow (always interactive)."""
     adapter = get_adapter(cfg)
@@ -690,7 +752,7 @@ def run_restore(cfg: Config) -> None:
                     adapter.ensure_schemas(target_db, schemas_to_ensure)
 
                 progress.update(task, description=f"[cyan]Running pg_restore ({backup_file.name})…[/]")
-                _execute_pg_restore(backup_file, target_db, restore_args, cfg)
+                _execute_pg_restore_v2(backup_file, target_db, restore_args, cfg)
             else:
                 progress.update(task, description=f"[cyan]Restoring {backup_file.name}…[/]")
                 no_owner = "--no-owner" in role_args
