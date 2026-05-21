@@ -1,13 +1,6 @@
 name: PR Checks
 
 on:
-  push:
-    branches: [ "**" ]
-    paths:
-      - "fuelrod_backup/**"
-      - "tests/**"
-      - "pyproject.toml"
-      - "poetry.lock"
   pull_request:
     branches: [ main, develop ]
   workflow_dispatch:
