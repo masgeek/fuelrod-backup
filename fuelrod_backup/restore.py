@@ -161,7 +161,7 @@ def _step_connection(cfg: Config, adapter: DbAdapter) -> None:
     else:
         console.print(f"  Mode   : Direct — {cfg.host}:{cfg.port}")
     console.print(f"  User   : {cfg.user}")
-    console.print(f"  Source : {cfg.backup_dir}")
+    console.print(f"  Source : {cfg.base_dir}")
     console.print()
 
     if questionary.confirm("Override connection settings?", default=False).ask():
@@ -180,38 +180,67 @@ def _step_connection(cfg: Config, adapter: DbAdapter) -> None:
     console.print("[green]Connection OK.[/]")
 
 
-def _step_select_db_dir(cfg: Config) -> tuple[Path, str]:
-    """Step 2: pick a database folder from BASE_DIR."""
-    _section("Step 2 — Select Database")
+def _step_select_top_dir(cfg: Config) -> Path:
+    """Step 2: pick a top-level project/group folder from BASE_DIR."""
+    _section("Step 2 — Select Project Directory")
 
-    base = Path(cfg.backup_dir)
-    db_dirs = sorted([d for d in base.iterdir() if d.is_dir()])
+    base = Path(cfg.base_dir)
+    top_dirs = sorted([d for d in base.iterdir() if d.is_dir()])
+    if not top_dirs:
+        _die(f"No directories found in {base}")
+
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("#", style="dim", width=4)
+    table.add_column("Directory", min_width=24)
+    table.add_column("Backups", justify="right")
+    for i, d in enumerate(top_dirs):
+        count = sum(len(list(d.rglob(pat))) for pat in _BACKUP_EXTENSIONS)
+        table.add_row(str(i), d.name, str(count))
+    console.print(table)
+
+    choices = [questionary.Choice(title=d.name, value=d) for d in top_dirs]
+    top_dir: Path = questionary.select("Select directory", choices=choices).ask()
+    console.print(f"  Selected: [bold]{top_dir.name}[/]")
+    return top_dir
+
+
+def _resolve_engine_dir(top_dir: Path, db_type_value: str) -> Path:
+    """Resolve top_dir/<db_type> and die clearly if it doesn't exist."""
+    engine_dir = top_dir / db_type_value
+    if not engine_dir.is_dir():
+        _die(
+            f"No '{db_type_value}' folder found under {top_dir}. "
+            f"Expected: {engine_dir}"
+        )
+    return engine_dir
+
+
+def _step_select_database(engine_dir: Path) -> tuple[Path, str]:
+    """Step 3: pick a database folder inside the engine dir."""
+    _section("Step 3 — Select Database")
+
+    db_dirs = sorted([d for d in engine_dir.iterdir() if d.is_dir()])
     if not db_dirs:
-        _die(f"No database folders found in {base}")
+        _die(f"No database folders found in {engine_dir}")
 
     table = Table(show_header=True, header_style="bold")
     table.add_column("#", style="dim", width=4)
     table.add_column("Database", min_width=24)
-    table.add_column("Size", justify="right")
     table.add_column("Backups", justify="right")
     for i, d in enumerate(db_dirs):
-        size = subprocess.run(
-            ["du", "-sh", str(d)], capture_output=True
-        ).stdout.decode().split("\t")[0] if shutil.which("du") else "?"
         count = sum(len(list(d.glob(pat))) for pat in _BACKUP_EXTENSIONS)
-        table.add_row(str(i), d.name, size, str(count))
+        table.add_row(str(i), d.name, str(count))
     console.print(table)
 
     choices = [questionary.Choice(title=d.name, value=d) for d in db_dirs]
     db_dir: Path = questionary.select("Select database", choices=choices).ask()
-    database = db_dir.name
-    console.print(f"  Selected: [bold]{database}[/]")
-    return db_dir, database
+    console.print(f"  Selected: [bold]{db_dir.name}[/]")
+    return db_dir, db_dir.name
 
 
 def _step_select_file(db_dir: Path, database: str) -> Path:
-    """Step 3: pick a backup file from the database folder."""
-    _section("Step 3 — Select Backup File")
+    """Step 4: list backup files directly in db_dir; return chosen file."""
+    _section("Step 4 — Select Backup File")
 
     backups: list[Path] = []
     for pat in _BACKUP_EXTENSIONS:
@@ -223,7 +252,7 @@ def _step_select_file(db_dir: Path, database: str) -> Path:
 
     table = Table(show_header=True, header_style="bold")
     table.add_column("#", style="dim", width=4)
-    table.add_column("File", min_width=40)
+    table.add_column("File", min_width=46)
     table.add_column("Size", justify="right")
     for i, f in enumerate(backups):
         table.add_row(str(i), f.name, _human_size(f))
@@ -516,18 +545,25 @@ def run_restore(cfg: Config) -> None:
 
     if not cfg.password:
         _die("Password is required. Set the appropriate *_PASSWORD variable in .backup.")
-    if not cfg.backup_dir or not Path(cfg.backup_dir).is_dir():
-        _die(f"Backup directory not found: {cfg.backup_dir}")
+    if not cfg.base_dir or not Path(cfg.base_dir).is_dir():
+        _die(f"Backup directory not found: {cfg.base_dir}")
 
     console.print(Panel(f"[bold cyan]{cfg.db_type.value.upper()} Restore Wizard[/]", expand=False))
 
     # Step 1 — Connection
     _step_connection(cfg, adapter)
 
-    # Step 2 — Select database folder
-    db_dir, database = _step_select_db_dir(cfg)
+    # Step 2 — Select top-level project/group directory
+    top_dir = _step_select_top_dir(cfg)
 
-    # Step 3 — Select backup file
+    # Step 2b — Auto-resolve engine sub-directory from db_type config
+    engine_dir = _resolve_engine_dir(top_dir, cfg.db_type.value)
+    console.print(f"  Engine dir : [dim]{engine_dir}[/]")
+
+    # Step 3 — Select database folder
+    db_dir, database = _step_select_database(engine_dir)
+
+    # Step 4 — Select backup file from that folder only
     backup_file = _step_select_file(db_dir, database)
 
     # ── PostgreSQL-specific: TOC, schema, role, scope analysis ─────
