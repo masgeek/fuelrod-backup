@@ -236,16 +236,6 @@ def test_connection(
         raise typer.Exit(code=1)
 
 
-def _default_config_path() -> Path:
-    """Return the default config path in the user's home/profile directory."""
-    import os
-    if os.name == "nt":
-        user_profile = os.environ.get("USERPROFILE")
-        if user_profile:
-            return Path(user_profile) / ".backup"
-    return Path.home() / ".backup"
-
-
 @app.command("init")
 def init_config(
         output: Annotated[
@@ -255,10 +245,10 @@ def init_config(
 ) -> None:
     """Create or update a .backup config file interactively."""
     from . import prompt as q
-    from .config import _find_config_file, _parse_env_file
+    from .config import _find_config_file, _parse_env_file, user_home_dir
 
     if output is None:
-        output = _default_config_path()
+        output = user_home_dir() / ".backup"
     output = output.resolve()
     updating = output.exists()
 

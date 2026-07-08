@@ -104,6 +104,20 @@ def _parse_env_file(path: Path) -> dict[str, str]:
     return result
 
 
+def user_home_dir() -> Path:
+    """
+    Return the user's home/profile directory.
+
+    - Windows: ``%USERPROFILE%`` (falls back to ``Path.home()``)
+    - macOS/Linux: ``Path.home()`` (``~``)
+    """
+    if os.name == "nt":
+        user_profile = os.environ.get("USERPROFILE")
+        if user_profile:
+            return Path(user_profile)
+    return Path.home()
+
+
 def _find_config_file() -> Path | None:
     """
     Search for a config file, checking these locations in order:
@@ -121,14 +135,7 @@ def _find_config_file() -> Path | None:
     cwd = Path.cwd()
 
     search_dirs: list[Path] = []
-    if os.name == "nt":
-        user_profile = os.environ.get("USERPROFILE")
-        if user_profile:
-            home = Path(user_profile)
-        else:
-            home = Path.home()
-    else:
-        home = Path.home()
+    home = user_home_dir()
     if home not in (cwd, pkg_dir):
         search_dirs.append(home)
 
