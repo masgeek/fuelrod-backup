@@ -108,10 +108,11 @@ def _find_config_file() -> Path | None:
     """
     Search for a config file, checking these locations in order:
 
-    1. User home directory (~/)   (.backup then .env) — all operating systems
-    2. Current working directory  (.backup then .env)
-    3. Package project directory  (.backup then .env)
-    4. Repo root / one level up   (.backup then .env)
+    1. User home directory          (.backup then .env)
+       Windows: %USERPROFILE%  |  macOS/Linux: ~/
+    2. Current working directory    (.backup then .env)
+    3. Package project directory    (.backup then .env)
+    4. Repo root / one level up     (.backup then .env)
 
     Returns the first file found, or None.
     """
@@ -120,7 +121,14 @@ def _find_config_file() -> Path | None:
     cwd = Path.cwd()
 
     search_dirs: list[Path] = []
-    home = Path.home()
+    if os.name == "nt":
+        user_profile = os.environ.get("USERPROFILE")
+        if user_profile:
+            home = Path(user_profile)
+        else:
+            home = Path.home()
+    else:
+        home = Path.home()
     if home not in (cwd, pkg_dir):
         search_dirs.append(home)
 
