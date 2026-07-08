@@ -326,6 +326,12 @@ class PgRunner:
             dbname=dbname,
         )
 
+    def create_schema(self, dbname: str, schema: str) -> None:
+        self._execute(
+            pgsql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(pgsql.Identifier(schema)),
+            dbname=dbname,
+        )
+
     def create_db(self, dbname: str, owner: str | None = None) -> None:
         if owner:
             stmt = pgsql.SQL("CREATE DATABASE {} OWNER {}").format(

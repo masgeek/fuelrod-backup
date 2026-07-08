@@ -288,6 +288,18 @@ class MariaDbAdapter(DbAdapter):
         except MariaDbError:
             return "?"
 
+    def get_table_count(self, dbname: str, schema: str | None = None) -> str:
+        try:
+            if schema:
+                return "?"
+            val = self._query_one(
+                "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = %s",
+                (dbname,),
+            )
+            return str(val) if val else "0"
+        except MariaDbError:
+            return "?"
+
     def db_exists(self, dbname: str) -> bool:
         return dbname in self.list_databases()
 

@@ -177,6 +177,25 @@ def drop(
     run_drop(cfg)
 
 
+@app.command("create")
+def create(
+        use_docker: Annotated[bool | None, _DOCKER_OPT] = None,
+        db_type: Annotated[str | None, _DB_TYPE_OPT] = None,
+        config_file: Annotated[Path | None, _CONFIG_OPT] = None,
+) -> None:
+    """Interactively create a database or schema.
+
+    Creates a new database, or a new PostgreSQL schema inside
+    an existing database. Name confirmation is required.
+    """
+    from .create import run_create
+
+    _validate_db_type(db_type)
+    cfg = load_config(config_file, db_type_override=db_type)
+    _apply_docker_override(cfg, use_docker)
+    run_create(cfg)
+
+
 @app.command("test")
 def test_connection(
         use_docker: Annotated[bool | None, _DOCKER_OPT] = None,

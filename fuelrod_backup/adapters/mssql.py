@@ -245,6 +245,24 @@ class MssqlAdapter(DbAdapter):
         except MssqlError:
             return []
 
+    def get_table_count(self, dbname: str, schema: str | None = None) -> str:
+        try:
+            if schema:
+                val = self._query_one(
+                    "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = %s",
+                    (schema,),
+                    dbname=dbname,
+                )
+            else:
+                val = self._query_one(
+                    "SELECT COUNT(*) FROM information_schema.tables WHERE table_catalog = %s",
+                    (dbname,),
+                    dbname=dbname,
+                )
+            return str(val) if val else "0"
+        except MssqlError:
+            return "?"
+
     def db_exists(self, dbname: str) -> bool:
         val = self._query_one(
             "SELECT COUNT(*) FROM sys.databases WHERE name = %s",

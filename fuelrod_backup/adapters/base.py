@@ -21,6 +21,7 @@ class DbAdapter(ABC):
     supports_roles: bool = False
     supports_toc: bool = False
     supports_schema_drop: bool = False
+    supports_schema_create: bool = False
     dump_extension: str = ".dump"
 
     # ──────────────────────────────────────────────────────────────
@@ -64,6 +65,9 @@ class DbAdapter(ABC):
     def get_db_size(self, dbname: str) -> str:
         return "?"
 
+    def get_table_count(self, dbname: str, schema: str | None = None) -> str:
+        return "?"
+
     def get_user_schemas(self, dbname: str) -> list[str]:
         return []
 
@@ -81,6 +85,9 @@ class DbAdapter(ABC):
 
     def drop_schema(self, dbname: str, schema: str) -> None:
         raise NotImplementedError(f"{type(self).__name__} does not support drop_schema")
+
+    def create_schema(self, dbname: str, schema: str) -> None:
+        raise NotImplementedError(f"{type(self).__name__} does not support create_schema")
 
     def role_exists(self, role: str) -> bool:
         raise NotImplementedError(f"{type(self).__name__} does not support role_exists")
