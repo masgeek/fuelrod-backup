@@ -245,10 +245,10 @@ def init_config(
 ) -> None:
     """Create or update a .backup config file interactively."""
     from . import prompt as q
-    from .config import _find_config_file, _parse_env_file, user_home_dir
+    from .config import _find_config_file, _parse_env_file, user_config_dir
 
     if output is None:
-        output = user_home_dir() / ".backup"
+        output = user_config_dir() / ".backup"
     output = output.resolve()
     updating = output.exists()
 
@@ -295,6 +295,7 @@ def init_config(
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _write_config(output: Path, lines: list[str], updating: bool) -> None:
+    output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text("\n".join(lines), encoding="utf-8")
     try:
         output.chmod(0o600)
