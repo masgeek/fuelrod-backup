@@ -566,7 +566,8 @@ def _execute_pg_restore_v2(
             work_file = tmp_plain
 
         if cfg.use_docker:
-            ctr_path = f"/tmp/pg_restore_{work_file.stem}.dump"  # noqa: S108
+            safe_stem = re.sub(r"[^A-Za-z0-9_.-]", "_", work_file.stem) or "dump"
+            ctr_path = f"/tmp/pg_restore_{safe_stem}.dump"  # noqa: S108
             subprocess.run(
                 ["docker", "cp", str(work_file), f"{cfg.service}:{ctr_path}"],
                 check=True,
