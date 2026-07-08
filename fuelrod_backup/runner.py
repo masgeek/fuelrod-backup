@@ -10,6 +10,7 @@ PostgreSQL runner.
 from __future__ import annotations
 
 import gzip
+import re
 import shutil
 import subprocess
 import tempfile
@@ -179,7 +180,8 @@ class PgRunner:
                 work_file = tmp_plain
 
             if self.cfg.use_docker:
-                ctr_path = f"/tmp/pg_toc_{dump_file.stem}.dump"  # noqa: S108 — path is inside the container, not the host
+                safe_stem = re.sub(r"[^A-Za-z0-9_.-]", "_", dump_file.stem) or "dump"
+                ctr_path = f"/tmp/pg_toc_{safe_stem}.dump"  # noqa: S108 — path is inside the container, not the host
                 subprocess.run(
                     ["docker", "cp", str(work_file), f"{self.cfg.service}:{ctr_path}"],
                     check=True,
