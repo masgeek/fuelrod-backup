@@ -195,6 +195,7 @@ class MariaDbAdapter(DbAdapter):
         include_schemas / exclude_schemas are table-level for MySQL.
         (MySQL has no schemas; schemas map to tables for basic filtering.)
         """
+        _validate_identifier(dbname, "database name")
         cfg = self._cfg
         base_args = [
             cfg.mysql_dump_cmd,
@@ -227,6 +228,7 @@ class MariaDbAdapter(DbAdapter):
         no_owner: bool,
     ) -> None:
         """Restore a .sql / .sql.gz / .zip dump into *dbname*."""
+        _validate_identifier(dbname, "database name")
         cfg = self._cfg
         suffix = dump_file.suffix.lower()
 
