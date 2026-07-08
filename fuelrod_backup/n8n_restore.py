@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import sys
@@ -32,6 +33,18 @@ def _section(title: str) -> None:
 def _die(msg: str) -> None:
     console.print(f"[bold red]ERROR:[/] {msg}")
     sys.exit(1)
+
+
+_SAFE_SERVICE_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
+
+
+def _validate_service(service: str) -> None:
+    """Ensure service name is safe for use in filesystem and docker commands."""
+    if not service or not _SAFE_SERVICE_RE.match(service):
+        _die(
+            f"Invalid service name '{service}': only letters, digits, "
+            "underscores, and hyphens are permitted."
+        )
 
 
 def _human_size(path: Path) -> str:
@@ -79,6 +92,7 @@ def _select_service(cfg: Config) -> tuple[str, str, Path]:
         "Select service to restore", choices=choices
     ).ask()
 
+    _validate_service(selected_service)
     volume_name = f"{selected_service}-data"
     service_backup_dir = Path(cfg.base_dir) / "n8n" / selected_service
 
@@ -408,6 +422,7 @@ def run_n8n_restore(
 
     # Step 1 — Select service
     if service is not None:
+        _validate_service(service)
         volume_name = f"{service}-data"
         service_backup_dir = Path(cfg.base_dir) / "n8n" / service
         console.print(f"  Service : [bold]{service}[/]")
