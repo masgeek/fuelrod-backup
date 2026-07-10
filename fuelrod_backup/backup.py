@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gzip
+import re
 import shutil
 import subprocess
 import sys
@@ -36,6 +37,19 @@ def _section(title: str) -> None:
 def _die(msg: str) -> None:
     console.print(f"[bold red]ERROR:[/] {msg}")
     sys.exit(1)
+
+
+_SAFE_PATH_RE = re.compile(r"^[A-Za-z0-9_\- ]+$")
+
+
+def _validate_path_component(name: str, label: str = "name") -> str:
+    """Validate that *name* is safe to use as a filesystem path component."""
+    if not name or not _SAFE_PATH_RE.match(name):
+        _die(
+            f"Invalid {label} '{name}': only letters, digits, underscores, "
+            "hyphens, and spaces are permitted."
+        )
+    return name
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -148,7 +162,11 @@ def _backup_one(
         if task_id is not None:
             progress.update(task_id, description=desc)
 
+    _validate_path_component(db, "database name")
     db_dir = Path(cfg.backup_dir) / db
+    db_dir = db_dir.resolve()
+    if not str(db_dir).startswith(str(Path(cfg.backup_dir).resolve())):
+        _die(f"Path traversal detected for database '{db}'")
     db_dir.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")

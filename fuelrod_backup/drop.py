@@ -28,6 +28,11 @@ def _die(msg: str) -> None:
     sys.exit(1)
 
 
+def _fmt(val: str) -> str:
+    """Return val or dimmed '?' if unknown."""
+    return val if val and val != "?" else "[dim]?[/]"
+
+
 def run_drop(cfg: Config) -> None:
     """Interactive wizard to drop a database or schema."""
     adapter = get_adapter(cfg)
@@ -92,10 +97,16 @@ def _drop_database(cfg: Config, adapter: DbAdapter) -> None:
 
     tbl = Table(show_header=True, header_style="bold")
     tbl.add_column("#", style="dim", width=4)
-    tbl.add_column("Database", min_width=28)
+    tbl.add_column("Database", min_width=24)
+    tbl.add_column("Tables", justify="right")
     tbl.add_column("Size", justify="right")
     for i, db in enumerate(all_dbs, 1):
-        tbl.add_row(str(i), db, adapter.get_db_size(db))
+        tbl.add_row(
+            str(i),
+            db,
+            _fmt(adapter.get_table_count(db)),
+            _fmt(adapter.get_db_size(db)),
+        )
     console.print(tbl)
 
     db_name: str = questionary.select(
@@ -103,12 +114,25 @@ def _drop_database(cfg: Config, adapter: DbAdapter) -> None:
         choices=[questionary.Choice(db, value=db) for db in all_dbs],
     ).ask()
 
+    # Gather summary details
+    table_count = adapter.get_table_count(db_name)
+    db_size = adapter.get_db_size(db_name)
+    schemas = adapter.get_user_schemas(db_name)
+
     # Confirm
     console.print()
-    console.print(
-        f"  [bold red]WARNING:[/] [bold]{db_name}[/] and ALL its data will be permanently deleted."
-    )
-    console.print("  All active connections will be terminated first.")
+    summary_parts = [
+        "[bold red]WARNING:[/] You are about to permanently delete:",
+        f"  [bold]{db_name}[/]",
+        f"  Tables : {_fmt(table_count)}",
+        f"  Size   : {_fmt(db_size)}",
+    ]
+    if schemas:
+        summary_parts.append(f"  Schemas: {len(schemas)}")
+    summary_parts.append("")
+    summary_parts.append("  All active connections will be terminated first.")
+    summary_parts.append("  [bold]This operation cannot be undone.[/]")
+    console.print("\n".join(summary_parts))
     console.print()
     typed = questionary.text(f'  Type "[bold]{db_name}[/]" to confirm:').ask() or ""
     if typed.strip() != db_name:
@@ -174,9 +198,14 @@ def _drop_schema(cfg: Config, adapter: DbAdapter) -> None:
 
     tbl = Table(show_header=True, header_style="bold")
     tbl.add_column("#", style="dim", width=4)
-    tbl.add_column("Schema", min_width=28)
+    tbl.add_column("Schema", min_width=24)
+    tbl.add_column("Tables", justify="right")
     for i, s in enumerate(schemas, 1):
-        tbl.add_row(str(i), s)
+        tbl.add_row(
+            str(i),
+            s,
+            _fmt(adapter.get_table_count(db_name, s)),
+        )
     console.print(tbl)
 
     schema_name: str = questionary.select(
@@ -184,13 +213,20 @@ def _drop_schema(cfg: Config, adapter: DbAdapter) -> None:
         choices=[questionary.Choice(s, value=s) for s in schemas],
     ).ask()
 
+    # Gather summary
+    table_count = adapter.get_table_count(db_name, schema_name)
+
     # Confirm
     console.print()
     console.print(
-        f"  [bold red]WARNING:[/] Schema [bold]{schema_name}[/] in database [bold]{db_name}[/] "
-        "will be permanently deleted."
+        "  [bold red]WARNING:[/] You are about to permanently delete:"
     )
+    console.print(f"    Schema   : [bold]{schema_name}[/]")
+    console.print(f"    Database : [bold]{db_name}[/]")
+    console.print(f"    Tables   : {_fmt(table_count)}")
+    console.print()
     console.print("  Every table, view, function and sequence inside it will be gone.")
+    console.print("  [bold]This operation cannot be undone.[/]")
     console.print()
     typed = questionary.text(f'  Type "[bold]{schema_name}[/]" to confirm:').ask() or ""
     if typed.strip() != schema_name:

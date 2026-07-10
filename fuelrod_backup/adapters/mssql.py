@@ -11,6 +11,7 @@ For restore, the .bak is first copied into the container, then RESTORE is run.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -195,7 +196,10 @@ class MssqlAdapter(DbAdapter):
         cfg = self._cfg
 
         if cfg.use_docker:
-            ctr_path = f"{cfg.mssql_backup_dir}/{dump_file.name}"
+            safe_name = os.path.basename(dump_file.name)
+            if not re.match(r"^[A-Za-z0-9_.-]+$", safe_name):
+                raise MssqlError(f"Unsafe backup file name: {dump_file.name}")
+            ctr_path = f"{cfg.mssql_backup_dir}/{safe_name}"
             subprocess.run(
                 ["docker", "cp", str(dump_file), f"{cfg.service}:{ctr_path}"],
                 check=True,
@@ -244,6 +248,24 @@ class MssqlAdapter(DbAdapter):
             )
         except MssqlError:
             return []
+
+    def get_table_count(self, dbname: str, schema: str | None = None) -> str:
+        try:
+            if schema:
+                val = self._query_one(
+                    "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = %s",
+                    (schema,),
+                    dbname=dbname,
+                )
+            else:
+                val = self._query_one(
+                    "SELECT COUNT(*) FROM information_schema.tables WHERE table_catalog = %s",
+                    (dbname,),
+                    dbname=dbname,
+                )
+            return str(val) if val else "0"
+        except MssqlError:
+            return "?"
 
     def db_exists(self, dbname: str) -> bool:
         val = self._query_one(
