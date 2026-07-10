@@ -104,31 +104,53 @@ def _parse_env_file(path: Path) -> dict[str, str]:
     return result
 
 
+def user_config_dir() -> Path:
+    """
+    Return the user-scoped config directory for fuelrod-backup.
+
+    - Windows: ``%APPDATA%\\fuelrod-backup``
+    - macOS/Linux: ``$XDG_CONFIG_HOME/fuelrod-backup`` (defaults to ``~/.config/fuelrod-backup``)
+    """
+    if os.name == "nt":
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            return Path(appdata) / "fuelrod-backup"
+        fallback = os.environ.get("USERPROFILE")
+        if fallback:
+            return Path(fallback) / "AppData" / "Roaming" / "fuelrod-backup"
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    if xdg:
+        return Path(xdg) / "fuelrod-backup"
+    return Path.home() / ".config" / "fuelrod-backup"
+
+
 def _find_config_file() -> Path | None:
     """
     Search for a config file, checking these locations in order:
 
-    1. User home directory (~/)   (.backup then .env) — Linux only
-    2. Current working directory  (.backup then .env)
-    3. Package project directory  (.backup then .env)
-    4. Repo root / one level up   (.backup then .env)
+    1. User config directory     (.backup then .env)
+       Windows: %APPDATA%\\fuelrod-backup  |  macOS/Linux: ~/.config/fuelrod-backup
+    2. Home directory root       (~/.backup then ~/.env)  — backward compat
+    3. Current working directory (.backup then .env)
+    4. Package project directory (.backup then .env)
+    5. Repo root / one level up  (.backup then .env)
 
     Returns the first file found, or None.
     """
     pkg_dir = Path(__file__).parent.parent  # fuelrod-backup/
     repo_root = pkg_dir.parent  # proxy-tool/
     cwd = Path.cwd()
+    home = Path.home()
 
     search_dirs: list[Path] = []
-    if os.name == "posix":
-        home = Path.home()
-        if home not in (cwd, pkg_dir):
-            search_dirs.append(home)
-
-    search_dirs.append(cwd)
+    search_dirs.append(user_config_dir())
+    if home not in search_dirs:
+        search_dirs.append(home)
+    if cwd not in search_dirs:
+        search_dirs.append(cwd)
     if pkg_dir not in search_dirs:
         search_dirs.append(pkg_dir)
-    if repo_root != cwd and repo_root != pkg_dir:
+    if repo_root not in search_dirs:
         search_dirs.append(repo_root)
 
     for directory in search_dirs:

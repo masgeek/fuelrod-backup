@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from datetime import datetime, timedelta
@@ -30,6 +31,18 @@ def _section(title: str) -> None:
 def _die(msg: str) -> None:
     console.print(f"[bold red]ERROR:[/] {msg}")
     sys.exit(1)
+
+
+_SAFE_SERVICE_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
+
+
+def _validate_service(service: str) -> None:
+    """Ensure service name is safe for use in filesystem and docker commands."""
+    if not service or not _SAFE_SERVICE_RE.match(service):
+        _die(
+            f"Invalid service name '{service}': only letters, digits, "
+            "underscores, and hyphens are permitted."
+        )
 
 
 def _human_size(path: Path) -> str:
@@ -120,6 +133,7 @@ def _count_workflows(volume_name: str) -> str:
 
 def _backup_service(service: str, cfg: Config) -> None:
     """Perform a hot backup of one n8n Docker volume."""
+    _validate_service(service)
     volume_name = f"{service}-data"
 
     # Use base_dir / "n8n" / service  (not backup_dir which appends db_type)

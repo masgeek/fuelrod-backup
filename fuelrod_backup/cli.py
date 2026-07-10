@@ -177,6 +177,25 @@ def drop(
     run_drop(cfg)
 
 
+@app.command("create")
+def create(
+        use_docker: Annotated[bool | None, _DOCKER_OPT] = None,
+        db_type: Annotated[str | None, _DB_TYPE_OPT] = None,
+        config_file: Annotated[Path | None, _CONFIG_OPT] = None,
+) -> None:
+    """Interactively create a database or schema.
+
+    Creates a new database, or a new PostgreSQL schema inside
+    an existing database. Name confirmation is required.
+    """
+    from .create import run_create
+
+    _validate_db_type(db_type)
+    cfg = load_config(config_file, db_type_override=db_type)
+    _apply_docker_override(cfg, use_docker)
+    run_create(cfg)
+
+
 @app.command("test")
 def test_connection(
         use_docker: Annotated[bool | None, _DOCKER_OPT] = None,
@@ -222,12 +241,14 @@ def init_config(
         output: Annotated[
             Path,
             typer.Option("--output", "-o", help="Path for the config file.", dir_okay=False),
-        ] = Path(".backup"),
+        ] = None,
 ) -> None:
     """Create or update a .backup config file interactively."""
     from . import prompt as q
-    from .config import _find_config_file, _parse_env_file
+    from .config import _find_config_file, _parse_env_file, user_config_dir
 
+    if output is None:
+        output = user_config_dir() / ".backup"
     output = output.resolve()
     updating = output.exists()
 
@@ -274,6 +295,7 @@ def init_config(
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _write_config(output: Path, lines: list[str], updating: bool) -> None:
+    output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text("\n".join(lines), encoding="utf-8")
     try:
         output.chmod(0o600)

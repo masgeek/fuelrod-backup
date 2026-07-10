@@ -54,6 +54,15 @@ def _human_size(path: Path) -> str:
     return f"{size / 1024:.1f} KB"
 
 
+def _validate_resolved_path(resolved: Path, expected_base: Path) -> None:
+    """Ensure *resolved* is within *expected_base* to prevent symlink escape."""
+    if not str(resolved).startswith(str(expected_base.resolve())):
+        _die(
+            f"Path '{resolved}' is outside the expected base directory "
+            f"'{expected_base}'. Refusing to proceed."
+        )
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 #  TOC parsing helpers (PostgreSQL only)
 # ──────────────────────────────────────────────────────────────────────────────
@@ -184,8 +193,8 @@ def _step_select_top_dir(cfg: Config) -> Path:
     """Step 2: pick a top-level project/group folder from BASE_DIR."""
     _section("Step 2 — Select Project Directory")
 
-    base = Path(cfg.base_dir)
-    top_dirs = sorted([d for d in base.iterdir() if d.is_dir()])
+    base = Path(cfg.base_dir).resolve()
+    top_dirs = sorted([d for d in base.iterdir() if d.is_dir() and not d.is_symlink()])
     if not top_dirs:
         _die(f"No directories found in {base}")
 
@@ -200,6 +209,8 @@ def _step_select_top_dir(cfg: Config) -> Path:
 
     choices = [questionary.Choice(title=d.name, value=d) for d in top_dirs]
     top_dir: Path = questionary.select("Select directory", choices=choices).ask()
+    top_dir = top_dir.resolve()
+    _validate_resolved_path(top_dir, base)
     console.print(f"  Selected: [bold]{top_dir.name}[/]")
     return top_dir
 
@@ -219,7 +230,8 @@ def _step_select_database(engine_dir: Path) -> tuple[Path, str]:
     """Step 3: pick a database folder inside the engine dir."""
     _section("Step 3 — Select Database")
 
-    db_dirs = sorted([d for d in engine_dir.iterdir() if d.is_dir()])
+    engine_dir = engine_dir.resolve()
+    db_dirs = sorted([d for d in engine_dir.iterdir() if d.is_dir() and not d.is_symlink()])
     if not db_dirs:
         _die(f"No database folders found in {engine_dir}")
 
@@ -234,6 +246,8 @@ def _step_select_database(engine_dir: Path) -> tuple[Path, str]:
 
     choices = [questionary.Choice(title=d.name, value=d) for d in db_dirs]
     db_dir: Path = questionary.select("Select database", choices=choices).ask()
+    db_dir = db_dir.resolve()
+    _validate_resolved_path(db_dir, engine_dir)
     console.print(f"  Selected: [bold]{db_dir.name}[/]")
     return db_dir, db_dir.name
 
@@ -539,6 +553,69 @@ def _execute_pg_restore(
 #  Public entry point
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _execute_pg_restore_v2(
+        backup_file: Path,
+        target_db: str,
+        restore_args: list[str],
+        cfg: Config,
+) -> None:
+    """Restore a dump via a real file path so pg_restore parallelism can work."""
+    base_args = [
+                    "-U", cfg.user,
+                    "-h", cfg.host,
+                    "-p", str(cfg.port),
+                    "-d", target_db,
+                    "-v",
+                ] + restore_args
+    work_file = backup_file
+    tmp_plain: Path | None = None
+    ctr_path: str | None = None
+
+    try:
+        if backup_file.suffix == ".gz":
+            with tempfile.NamedTemporaryFile(suffix=".dump", delete=False) as tmp_file:
+                tmp_plain = Path(tmp_file.name)
+            with gzip.open(backup_file, "rb") as gz_in, tmp_plain.open("wb") as f_out:
+                shutil.copyfileobj(gz_in, f_out)
+            work_file = tmp_plain
+
+        if cfg.use_docker:
+            safe_stem = re.sub(r"[^A-Za-z0-9_.-]", "_", work_file.stem) or "dump"
+            ctr_path = f"/tmp/pg_restore_{safe_stem}.dump"  # noqa: S108
+            subprocess.run(
+                ["docker", "cp", str(work_file), f"{cfg.service}:{ctr_path}"],
+                check=True,
+            )
+            subprocess.run(
+                [
+                    "docker", "exec", "-i",
+                    "-e", f"PGPASSWORD={cfg.password}",
+                    "-e", f"PGUSER={cfg.user}",
+                    cfg.service,
+                    cfg.pg_restore_cmd,
+                    *base_args,
+                    ctr_path,
+                ],
+                check=True,
+            )
+        else:
+            env = os.environ.copy()
+            env["PGPASSWORD"] = cfg.password
+            subprocess.run(
+                [cfg.pg_restore_cmd, *base_args, str(work_file)],
+                env=env,
+                check=True,
+            )
+    finally:
+        if ctr_path:
+            subprocess.run(
+                ["docker", "exec", cfg.service, "rm", "-f", ctr_path],
+                check=False,
+            )
+        if tmp_plain and tmp_plain.exists():
+            tmp_plain.unlink()
+
+
 def run_restore(cfg: Config) -> None:
     """Main restore workflow (always interactive)."""
     adapter = get_adapter(cfg)
@@ -690,7 +767,7 @@ def run_restore(cfg: Config) -> None:
                     adapter.ensure_schemas(target_db, schemas_to_ensure)
 
                 progress.update(task, description=f"[cyan]Running pg_restore ({backup_file.name})…[/]")
-                _execute_pg_restore(backup_file, target_db, restore_args, cfg)
+                _execute_pg_restore_v2(backup_file, target_db, restore_args, cfg)
             else:
                 progress.update(task, description=f"[cyan]Restoring {backup_file.name}…[/]")
                 no_owner = "--no-owner" in role_args
