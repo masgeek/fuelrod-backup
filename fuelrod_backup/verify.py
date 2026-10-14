@@ -262,7 +262,7 @@ def check_bak(path: Path) -> list[Check]:
     return checks
 
 
-def check_encrypted(path: Path, decrypt_tool: str | None = None) -> list[Check]:
+def check_encrypted(path: Path, cfg: Config | None = None) -> list[Check]:
     """Encrypted artifacts: confirm the envelope, and decrypt if a tool exists."""
     checks: list[Check] = [_check_readable(path)]
     try:
@@ -278,11 +278,19 @@ def check_encrypted(path: Path, decrypt_tool: str | None = None) -> list[Check]:
         return checks
     checks.append(Check("header", "ok", f"encrypted ({'age' if is_age else 'gpg'}) envelope"))
 
-    tool = decrypt_tool or ("age" if is_age else "gpg")
+    tool = "age" if is_age else "gpg"
     if not shutil.which(tool):
         checks.append(Check("decrypt", "skip", f"'{tool}' not installed — not decrypted"))
         return checks
-    checks.append(Check("decrypt", "skip", "pass --decrypt to test decryption"))
+
+    if is_age and cfg is not None and not cfg.encrypt_identity_file:
+        checks.append(Check(
+            "decrypt", "skip",
+            "set ENCRYPT_IDENTITY_FILE to test decryption of encrypted backups",
+        ))
+        return checks
+
+    checks.append(Check("decrypt", "skip", "payload not decrypted — restore --incremental-chain exercises it"))
     return checks
 
 
@@ -362,7 +370,7 @@ def verify_artifact(
     elif kind == "bak":
         result.checks += check_bak(path)
     elif kind.startswith("encrypted:"):
-        result.checks += check_encrypted(path)
+        result.checks += check_encrypted(path, cfg)
     else:
         result.add("kind", "warn", f"unknown artifact type: {path.name}")
 

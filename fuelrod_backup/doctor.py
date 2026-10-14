@@ -252,6 +252,41 @@ def check_connection(cfg: Config, report: Report) -> None:
         report.add("Database connection", "ok", f"{cfg.db_type.value} reachable")
 
 
+def check_encryption(cfg: Config, report: Report) -> None:
+    from .crypto import tool_available, validate_config
+
+    if not cfg.encrypt:
+        report.add(
+            "Encryption at rest", "skip", "disabled (ENCRYPT=false)",
+            "Backups are written unencrypted — set ENCRYPT=true with a recipient key.",
+        )
+        return
+
+    if not tool_available(cfg.encrypt_tool):
+        report.add(
+            "Encryption at rest", "fail", f"{cfg.encrypt_tool} not on PATH",
+            f"Install {cfg.encrypt_tool}, or set ENCRYPT_TOOL, or set ENCRYPT=false.",
+        )
+        return
+
+    try:
+        validate_config(cfg)
+    except Exception as exc:  # noqa: BLE001 — CryptoError carries the user-facing message
+        report.add("Encryption at rest", "fail", str(exc))
+        return
+
+    report.add("Encryption at rest", "ok", f"{cfg.encrypt_tool} → {cfg.encrypt_recipient or 'symmetric'}")
+    if cfg.encrypt_tool == "age" and cfg.encrypt_identity_file:
+        if not Path(cfg.encrypt_identity_file).is_file():
+            report.add(
+                "Encryption identity file", "fail",
+                f"missing: {cfg.encrypt_identity_file}",
+                "Restores of encrypted backups need this private key file.",
+            )
+        else:
+            report.add("Encryption identity file", "ok", cfg.encrypt_identity_file)
+
+
 def check_rclone(cfg: Config, report: Report) -> None:
     if not shutil.which("rclone"):
         report.add(
@@ -316,6 +351,7 @@ def run_doctor(cfg: Config, *, skip_connection: bool = False) -> int:
     check_docker(cfg, report)
     if not skip_connection:
         check_connection(cfg, report)
+    check_encryption(cfg, report)
     check_rclone(cfg, report)
     check_n8n_services(cfg, report)
 

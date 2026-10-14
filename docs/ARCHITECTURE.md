@@ -12,6 +12,7 @@
 | `verify.py` | Offline integrity checks for backup artifacts |
 | `doctor.py` | Pre-flight diagnostics for config, tools, disk and connectivity |
 | `output.py` | JSON output mode — silences Rich consoles, emits one document |
+| `crypto.py` | Encryption at rest (age/gpg) with temp-plaintext lifecycle |
 | `runner.py` | PostgreSQL native + subprocess operations (psycopg3) |
 | `drop.py` | Interactive database/schema drop |
 | `n8n_backup.py` | Hot Docker volume snapshots for n8n |
@@ -124,6 +125,18 @@ Key migration behaviours:
 - Foreign keys appended with `DEFERRABLE INITIALLY DEFERRED`
 - Tables with > 1 million rows bypass the thread pool and run sequentially
 - Skipped rows written to `<db>_skipped_rows.jsonl`
+
+## Encryption Flow
+
+`crypto.py` encrypts after compression and before the incremental state is written, so the recorded
+base is the ciphertext that actually survives. `encrypt_file()` only unlinks the plaintext after the
+ciphertext is confirmed non-empty. Restore calls `decrypt_if_needed()`, which decrypts to a temp file
+registered with an `atexit` cleanup — plaintext dumps never accumulate in the temp directory.
+
+The subprocess environment is built from an allowlist (`_ALLOWED_ENV`: PATH, HOME/USERPROFILE,
+APPDATA, GNUPGHOME, XDG_*) rather than inherited: the tools need their own state directory, but the
+parent environment would leak database passwords. Key material is never passed on the command line —
+age takes a recipient public key and an identity file, gpg a recipient key or a passphrase file.
 
 ## Output Mode
 

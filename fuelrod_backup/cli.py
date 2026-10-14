@@ -115,6 +115,13 @@ def backup(
             int | None,
             typer.Option("--keep-days", "-k", help="Delete backups older than N days (0 = keep forever)."),
         ] = None,
+        encrypt: Annotated[
+            bool | None,
+            typer.Option(
+                "--encrypt/--no-encrypt",
+                help="Encrypt artifacts with age/gpg after compression (overrides ENCRYPT).",
+            ),
+        ] = None,
         databases: Annotated[
             list[str],
             typer.Option("--db", "-d", help="Database(s) to back up (repeatable). Default: all."),
@@ -137,6 +144,9 @@ def backup(
         configs = load_all_configs(config_file)
         for cfg in configs:
             _apply_docker_override(cfg, use_docker)
+        if encrypt is not None:
+            for c in configs:
+                c.encrypt = encrypt
         run_parallel_backup(
             configs,
             databases=list(databases) or None,
@@ -147,6 +157,8 @@ def backup(
 
     cfg = load_config(config_file, db_type_override=db_type)
     _apply_docker_override(cfg, use_docker)
+    if encrypt is not None:
+        cfg.encrypt = encrypt
     run_backup(
         cfg,
         interactive=not no_interactive,

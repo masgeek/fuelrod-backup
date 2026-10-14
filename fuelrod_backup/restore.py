@@ -20,6 +20,7 @@ from . import prompt as questionary
 from .adapters import get_adapter
 from .adapters.base import DbAdapter
 from .config import Config
+from .crypto import CryptoError, decrypt_if_needed, is_encrypted
 from .output import emit, json_enabled, register
 
 console = register(Console())
@@ -842,6 +843,10 @@ def run_restore(
     if incremental_chain:
         _die("--incremental-chain requires --no-interactive (the base file must be explicit).")
 
+    if is_encrypted(backup_file):
+        console.print(f"  [cyan]Encrypted[/] artifact — decrypting with {cfg.encrypt_tool}…")
+        backup_file = _decrypt_for_restore(backup_file, cfg)
+
     # ── PostgreSQL-specific: TOC, schema, role, scope analysis ─────
     toc = ""
     schema_args: list[str] = []
@@ -1020,6 +1025,7 @@ def run_restore_noninteractive(
 
     backup_file = _resolve_backup_file(db_dir, database, file_name)
     target_db = target or database
+    backup_file = _decrypt_for_restore(backup_file, cfg)
 
     # ── Engine-specific options, derived from the dump itself ────────────
     toc = ""
@@ -1138,6 +1144,14 @@ def _target_exists(adapter: DbAdapter, target: str) -> bool:
         return adapter.db_exists(target)
     except Exception:  # noqa: BLE001 — plan output must not abort the run
         return False
+
+
+def _decrypt_for_restore(backup_file: Path, cfg: Config) -> Path:
+    """Return a working copy of an encrypted artifact, or the original path."""
+    try:
+        return decrypt_if_needed(backup_file, cfg)
+    except CryptoError as exc:
+        _die(str(exc))
 
 
 def _read_toc_quiet(adapter: DbAdapter, backup_file: Path) -> str:

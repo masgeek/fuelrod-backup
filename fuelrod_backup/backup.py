@@ -21,6 +21,7 @@ from . import prompt as questionary
 from .adapters import get_adapter
 from .adapters.base import DbAdapter
 from .config import Config
+from .crypto import CryptoError, encrypt_file, validate_config
 from .output import emit, json_enabled, register
 
 console = register(Console())
@@ -308,6 +309,7 @@ def _backup_one(
         mf.write(f"User      : {cfg.user}\n")
         mf.write(f"Docker    : {cfg.use_docker}\n")
         mf.write(f"Compressed: {cfg.compress}\n")
+        mf.write(f"Encrypted  : {cfg.encrypt_tool if cfg.encrypt else 'no'}\n")
         mf.write(f"Mode      : {mode}\n")
         if base_name:
             mf.write(f"Base      : {base_name}\n")
@@ -336,6 +338,14 @@ def _backup_one(
             shutil.copyfileobj(f_in, f_out)
         dump_file.unlink()
         dump_file = gz_file
+
+    # Encrypt after compression so the plaintext never leaves the host.
+    if cfg.encrypt:
+        _phase(f"[cyan]{db}[/]  encrypting ({cfg.encrypt_tool})…")
+        try:
+            dump_file = encrypt_file(dump_file, cfg)
+        except CryptoError as exc:
+            _die(str(exc))
 
     # State is written after compression so `base` points at the file that
     # actually survives on disk.
@@ -378,7 +388,10 @@ def _cleanup_old(base_dir: str, days: int, protect: set[str] | None = None) -> N
     keep = protect or set()
     cutoff = time.time() - days * 86400
     base = Path(base_dir)
-    for pattern in ("**/*.dump", "**/*.dump.gz", "**/*.sql", "**/*.sql.gz", "**/*.bak", "**/manifest_*.txt"):
+    for pattern in (
+        "**/*.dump", "**/*.dump.gz", "**/*.sql", "**/*.sql.gz", "**/*.bak",
+        "**/*.age", "**/*.gpg", "**/manifest_*.txt",
+    ):
         for f in base.glob(pattern):
             if f.name in keep:
                 continue
@@ -411,6 +424,12 @@ def run_backup(
     pg_restore -n (driven by TOC analysis in the restore wizard).
     """
     adapter = get_adapter(cfg)
+
+    if cfg.encrypt:
+        try:
+            validate_config(cfg)
+        except CryptoError as exc:
+            _die(str(exc))
 
     # Apply CLI overrides before wizard (wizard may further override)
     if compress is not None:

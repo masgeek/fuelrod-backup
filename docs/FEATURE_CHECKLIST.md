@@ -38,6 +38,6 @@ Use this as the execution tracker. Items are ordered from highest to lowest reco
 ## Optional Backlog
 
 - [x] Incremental PostgreSQL backup strategy support (`INCREMENTAL=true` + `restore --incremental-chain`)
-- [ ] Encryption at rest for backup artifacts
+- [x] Encryption at rest for backup artifacts (`ENCRYPT=true`, age/gpg)
 - [ ] Minimal web dashboard for backup catalog browsing
 - [ ] Pluggable adapter interface for additional engines

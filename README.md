@@ -201,6 +201,23 @@ fuelrod-backup restore -n -p fuelrod -d app --file app_20260101_000000.dump     
   its base, never a replacement. After a PostgreSQL stats reset every table looks changed, so the
   run degrades to a near-full dump rather than missing data.
 
+### Encryption at rest
+
+Set `ENCRYPT=true` and artifacts are encrypted after compression into `<file>.age` (or `.gpg`);
+the plaintext is deleted only once the ciphertext exists, so a failed encryption never destroys a
+backup. `backup --encrypt/--no-encrypt` overrides the config for one run. `doctor` reports whether
+the tool, recipient and identity file are usable before you rely on it.
+
+Restore detects the suffix automatically — interactive and `restore -n` both decrypt to a
+temporary file that is removed when the process exits. Set `ENCRYPT_IDENTITY_FILE` (age) or
+`ENCRYPT_PASSPHRASE_FILE` (gpg) on the machine that restores.
+
+```bash
+fuelrod-backup doctor --json | jq '.checks[] | select(.name=="Encryption at rest")'
+fuelrod-backup backup -n --encrypt
+fuelrod-backup restore -n -p fuelrod -d app --file app_20260101_000000.dump.gz.age --yes
+```
+
 ### `drop`
 
 Interactive database or schema drop. Terminates active connections before dropping and requires confirmation.
@@ -316,6 +333,11 @@ DB_PORT=
 | `COMPRESS_FILE` | `true`/`false` — gzip output |
 | `INCREMENTAL` | `true`/`false` — dump only changed tables (PostgreSQL only) |
 | `INCREMENTAL_KEEP` | number of `_inc` dumps to keep alongside the base (default 5) |
+| `ENCRYPT` | `true`/`false` — encrypt artifacts after compression |
+| `ENCRYPT_TOOL` | `age` (default) or `gpg` |
+| `ENCRYPT_RECIPIENT` | age public key (`age1…`) or gpg recipient key |
+| `ENCRYPT_IDENTITY_FILE` | age private key file, needed to restore encrypted backups |
+| `ENCRYPT_PASSPHRASE_FILE` | passphrase file for symmetric gpg (never pass a passphrase on the CLI) |
 | `KEEP_DAYS` | retention days (`0` = keep forever) |
 | `CONNECTION_TIMEOUT` | connection timeout in seconds |
 

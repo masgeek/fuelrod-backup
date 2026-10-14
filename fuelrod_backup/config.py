@@ -42,6 +42,12 @@ class Config:
     # last full dump; the base dump is kept until it is superseded.
     incremental: bool = False
     incremental_keep: int = 5
+    # Encryption at rest (age by default, gpg supported)
+    encrypt: bool = False
+    encrypt_tool: str = "age"
+    encrypt_recipient: str = ""
+    encrypt_identity_file: str = ""
+    encrypt_passphrase_file: str = ""
     connection_timeout: int = 30  # seconds; applies to driver connect + docker subprocess checks
     # n8n volume backup
     n8n_services: list[str] = field(default_factory=lambda: ["n8n"])
@@ -106,6 +112,24 @@ def _parse_env_file(path: Path) -> dict[str, str]:
 
         result[key] = val
     return result
+
+
+def _load_incremental(cfg: Config, get) -> None:
+    """Parse INCREMENTAL / INCREMENTAL_KEEP from any lookup callable."""
+    cfg.incremental = get("INCREMENTAL", "false").strip().lower() in ("true", "1", "yes")
+    try:
+        cfg.incremental_keep = int(get("INCREMENTAL_KEEP", "5"))
+    except ValueError:
+        cfg.incremental_keep = 5
+
+
+def _load_encryption(cfg: Config, get) -> None:
+    """Parse the encryption-at-rest settings from any lookup callable."""
+    cfg.encrypt = get("ENCRYPT", "false").strip().lower() in ("true", "1", "yes")
+    cfg.encrypt_tool = get("ENCRYPT_TOOL", "age").strip() or "age"
+    cfg.encrypt_recipient = get("ENCRYPT_RECIPIENT", "").strip()
+    cfg.encrypt_identity_file = get("ENCRYPT_IDENTITY_FILE", "").strip()
+    cfg.encrypt_passphrase_file = get("ENCRYPT_PASSPHRASE_FILE", "").strip()
 
 
 def user_config_dir() -> Path:
@@ -261,11 +285,8 @@ def load_config(config_file: Path | None = None, db_type_override: str | None = 
     except ValueError:
         cfg.days_to_keep = 7
 
-    cfg.incremental = _get("INCREMENTAL", "false").strip().lower() in ("true", "1", "yes")
-    try:
-        cfg.incremental_keep = int(_get("INCREMENTAL_KEEP", "5"))
-    except ValueError:
-        cfg.incremental_keep = 5
+    _load_incremental(cfg, _get)
+    _load_encryption(cfg, _get)
 
     # n8n volume backup
     raw_n8n = _get("N8N_SERVICES", "n8n").strip()
@@ -318,11 +339,8 @@ def _load_prefixed_config(
         cfg.days_to_keep = int(_get("KEEP_DAYS", "7"))
     except ValueError:
         cfg.days_to_keep = 7
-    cfg.incremental = _get("INCREMENTAL", "false").strip().lower() in ("true", "1", "yes")
-    try:
-        cfg.incremental_keep = int(_get("INCREMENTAL_KEEP", "5"))
-    except ValueError:
-        cfg.incremental_keep = 5
+    _load_incremental(cfg, _get)
+    _load_encryption(cfg, _get)
     try:
         cfg.connection_timeout = int(_get("CONNECTION_TIMEOUT", "30"))
     except ValueError:
