@@ -125,6 +125,10 @@ The wizard navigates the backup directory in four steps:
 
 Interactive database or schema drop. Terminates active connections before dropping and requires confirmation.
 
+Use `--disconnect-only` to terminate connections **without** dropping anything.
+
+- `--disconnect-only` — terminate all connections to the database; no data is deleted
+- `--db, -d TEXT` — target database (skips the database prompt; mainly for `--disconnect-only`)
 - `--docker / --no-docker`
 - `--db-type, -t`
 - `--config, -c PATH`

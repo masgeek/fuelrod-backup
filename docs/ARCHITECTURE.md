@@ -60,6 +60,10 @@ Multi-engine mode (`--all-engines`) runs each engine in parallel via `ThreadPool
 3. Terminate active connections (`pg_terminate_backend` for PostgreSQL).
 4. Execute `DROP DATABASE` / `DROP SCHEMA ... CASCADE`.
 
+`drop` also offers a third target, **Connections**, which stops after step 3 — every session on the
+database is killed and nothing is deleted. Reachable non-interactively via
+`drop --disconnect-only [--db NAME]`. Both paths require typing the database name to confirm.
+
 ## Migration Flow (MariaDB → PostgreSQL)
 
 ```
@@ -121,4 +125,7 @@ Key migration behaviours:
 
 Three-layer merge: **internal defaults → config file → environment variables**.
 
-Auto-discovery walks up from the current directory searching for `.backup`, `.env`, `.env-backup`. Multi-engine mode loads per-engine configs via `PG_*`, `MY_*`, `MS_*` key prefixes using `load_all_configs()`.
+Auto-discovery checks the user config directory first (`config.py::user_config_dir()` —
+`%APPDATA%\fuelrod-backup` on Windows, `$XDG_CONFIG_HOME/fuelrod-backup` or `~/.config/fuelrod-backup`
+elsewhere), then home, cwd, package dir, and repo root; each directory tries `.backup`, `.env`, `.env-backup`.
+`init` writes to `user_config_dir()` by default. Multi-engine mode loads per-engine configs via `PG_*`, `MY_*`, `MS_*` key prefixes using `load_all_configs()`.
