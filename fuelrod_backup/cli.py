@@ -1013,7 +1013,11 @@ def gdrive_sync_cmd(
         ] = False,
         config_file: Annotated[Path | None, _CONFIG_OPT] = None,
 ) -> None:
-    """Sync local backups to Google Drive via rclone, then prune old remote files."""
+    """Sync local backups to Google Drive via rclone, then prune old remote files.
+
+    Kept for backward compatibility — `sync` is the general form and accepts any
+    rclone remote (s3:, b2:, sftp:, ...).
+    """
     from .gdrive_sync import run_gdrive_sync
 
     cfg = load_config(config_file)
@@ -1025,6 +1029,61 @@ def gdrive_sync_cmd(
         include_patterns=list(include) or None,
         delete_local=not keep_local,
     )
+
+
+@app.command("sync")
+def sync_cmd(
+        remote: Annotated[
+            str | None,
+            typer.Option(
+                "--remote", "-r",
+                help="Target rclone remote, e.g. s3:my-bucket/backups, b2:bucket, sftp:host:/srv/backups.",
+            ),
+        ] = None,
+        dry_run: Annotated[
+            bool,
+            typer.Option("--dry-run", "-d", help="Show what would happen — no files moved or deleted."),
+        ] = False,
+        days: Annotated[
+            int | None,
+            typer.Option("--days", "-n", help="Prune remote files older than N days (overrides BACKUP_AGE)."),
+        ] = None,
+        include: Annotated[
+            list[str],
+            typer.Option("--include", "-i", help="Glob pattern to include (repeatable, overrides INCLUDE_FILES)."),
+        ] = [],
+        keep_local: Annotated[
+            bool,
+            typer.Option("--keep-local", help="Do NOT delete local files after a successful upload."),
+        ] = False,
+        list_remotes: Annotated[
+            bool,
+            typer.Option("--list-remotes", help="List the rclone remotes configured on this host and exit."),
+        ] = False,
+        as_json: Annotated[bool, _JSON_OPT] = False,
+        config_file: Annotated[Path | None, _CONFIG_OPT] = None,
+) -> None:
+    """Upload backups to any rclone remote and prune old files there.
+
+    Works with every backend rclone supports: Google Drive, S3, S3-compatible
+    (MinIO, Wasabi), Backblaze B2, SFTP, Azure Blob, WebDAV. Local files are
+    deleted only after a successful upload.
+    """
+    from .storage import run_sync
+
+    _enable_json(as_json)
+    cfg = load_config(config_file)
+    code = run_sync(
+        cfg,
+        remote=remote or f"gdrive:{cfg.gdrive_remote}",
+        dry_run=dry_run,
+        age_days=days,
+        include_patterns=list(include) or None,
+        delete_local=not keep_local,
+        show_remotes=list_remotes,
+    )
+    if code:
+        raise typer.Exit(code=code)
 
 
 @app.command("migrate")

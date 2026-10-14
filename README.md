@@ -14,7 +14,7 @@ Interactive backup and restore CLI for PostgreSQL, MariaDB/MySQL, and Microsoft 
 - Backup integrity verification (`verify`)
 - Pre-flight diagnostics (`doctor`)
 - n8n Docker volume snapshots with no container downtime
-- Google Drive sync via rclone (`gdrive-sync`)
+- Off-site sync to Google Drive, S3, B2, SFTP or any rclone remote (`sync`)
 - MariaDB → PostgreSQL migration with schema transformation, data migration, and post-migration validation (`migrate`)
 
 ## Installation
@@ -77,7 +77,8 @@ fuelrod-backup doctor    [OPTIONS]
 fuelrod-backup migrate    [OPTIONS]
 fuelrod-backup n8n-backup  [OPTIONS]
 fuelrod-backup n8n-restore [OPTIONS]
-fuelrod-backup gdrive-sync [OPTIONS]
+fuelrod-backup sync        [OPTIONS]
+fuelrod-backup gdrive-sync [OPTIONS]  (alias of sync, Drive-only default)
 ```
 
 The short alias `fr-bkp` is equivalent to `fuelrod-backup` for all commands.
@@ -269,16 +270,33 @@ Restore an n8n volume from a `.tar.gz` archive.
 - `--verbose, -v` — print detailed step logs
 - `--config, -c PATH`
 
-### `gdrive-sync`
+### `sync`
 
-Upload backup files to Google Drive via rclone, with optional age-based remote pruning.
+Upload backup files to any rclone remote, with optional age-based remote pruning. Local files are
+deleted only after a successful upload.
 
+- `--remote, -r TEXT` — target remote, e.g. `s3:my-bucket/backups`, `b2:bucket`, `sftp:host:/srv/backups`
+- `--list-remotes` — list the rclone remotes configured on this host and exit
 - `--dry-run, -d` — show plan without uploading
-- `--gdrive, -g TEXT` — Google Drive remote folder name
 - `--days, -n INT` — prune remote files older than N days
 - `--include, -i GLOB` — repeatable; glob pattern to include
 - `--keep-local` — skip local file deletion after upload
+- `--json` — machine-readable output
 - `--config, -c PATH`
+
+Backends: any remote rclone supports. Provider-specific flags are applied automatically (Google
+Drive gets `--drive-use-trash=false` so pruning does not keep a second copy in the trash; S3 gets
+`--s3-provider` when `S3_PROVIDER` is set for MinIO/Wasabi/etc.).
+
+```bash
+fuelrod-backup sync --list-remotes
+fuelrod-backup sync -r s3:acme-backups/prod --keep-local
+```
+
+### `gdrive-sync`
+
+Backward-compatible alias that defaults to `gdrive:<GDRIVE>`. Same options as `sync`, with
+`--gdrive/-g` for the Drive folder name.
 
 ## Notifications
 
@@ -374,6 +392,7 @@ DB_PORT=
 | `NOTIFY_HOOK_SUCCESS` | command run on success, e.g. `/bin/notify {status} {command}` |
 | `NOTIFY_HOOK_FAILURE` | command run on failure |
 | `NOTIFY_TIMEOUT` | webhook/hook timeout in seconds (default 15) |
+| `S3_PROVIDER` | rclone `--s3-provider` (Minio, Wasabi, ...) for `s3:` remotes |
 | `KEEP_DAYS` | retention days (`0` = keep forever) |
 | `CONNECTION_TIMEOUT` | connection timeout in seconds |
 

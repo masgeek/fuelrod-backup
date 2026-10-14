@@ -18,7 +18,8 @@
 | `drop.py` | Interactive database/schema drop |
 | `n8n_backup.py` | Hot Docker volume snapshots for n8n |
 | `n8n_restore.py` | Volume archive restore for n8n |
-| `gdrive_sync.py` | Google Drive upload via rclone |
+| `storage.py` | Off-site upload to any rclone remote (Drive, S3, B2, SFTP, …) |
+| `gdrive_sync.py` | Backward-compatible Drive-only wrapper over `storage.py` |
 | `migrate/` | MariaDB → PostgreSQL migration subsystem |
 | `prompt.py` | questionary wrapper with safe Ctrl+C handling |
 
@@ -190,6 +191,19 @@ unverifiable artifact never blocks a pipeline.
 **Backup** — for each n8n service, `docker exec` + `tar` creates a `.tar.gz` of the volume contents. The container keeps running throughout.
 
 **Restore** — extracts the archive into the volume with `docker cp` + `tar`; `--dry-run` prints the plan without touching files.
+
+## Storage Sync Flow
+
+`storage.py` parses a remote spec into `Remote(provider, path)` and adds the provider-specific flags
+(`provider_args()`) — Drive disables its trash so pruning actually reclaims space, S3 pins
+`--s3-provider` when configured. The `rclone` binary is invoked directly with list-form argv and an
+allowlisted minimal environment (`rclone_env()`): no shell, and no credential leakage. Adding a
+backend is a data change, not a code change.
+
+Failure handling keeps the original safety guarantee: `_upload()` raises `StorageError` on a failed
+transfer, which aborts before any local deletion; a prune failure for one pattern is recorded and
+reported without aborting the rest. `gdrive-sync` remains as a Drive-only wrapper with the
+`gdrive:<GDRIVE>` default.
 
 ## Google Drive Sync Flow
 
