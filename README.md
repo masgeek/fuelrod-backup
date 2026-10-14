@@ -6,11 +6,12 @@ Interactive backup and restore CLI for PostgreSQL, MariaDB/MySQL, and Microsoft 
 
 - Supports `postgres`, `mariadb`, and `mssql` engines
 - Interactive backup and restore wizards with progress bars
-- Non-interactive backup mode for automation
+- Non-interactive backup and restore modes for automation
 - Docker and direct-host connection modes
 - Config bootstrap wizard (`init`) and connection check (`test`)
 - Backup retention cleanup (`KEEP_DAYS`)
-- Interactive database and schema drop (`drop`)
+- Interactive database/schema drop, plus disconnect-without-drop (`drop`)
+- Backup integrity verification (`verify`)
 - n8n Docker volume snapshots with no container downtime
 - Google Drive sync via rclone (`gdrive-sync`)
 - MariaDB → PostgreSQL migration with schema transformation, data migration, and post-migration validation (`migrate`)
@@ -70,6 +71,7 @@ fuelrod-backup test       [OPTIONS]
 fuelrod-backup backup     [OPTIONS]
 fuelrod-backup restore    [OPTIONS]
 fuelrod-backup drop       [OPTIONS]
+fuelrod-backup verify    [OPTIONS]
 fuelrod-backup migrate    [OPTIONS]
 fuelrod-backup n8n-backup  [OPTIONS]
 fuelrod-backup n8n-restore [OPTIONS]
@@ -141,6 +143,23 @@ fuelrod-backup restore -n -p fuelrod -d app --target-db app_restored --dry-run
 # Run it unattended (cron/CI)
 fuelrod-backup restore -n -p fuelrod -d app --target-db app_restored --yes
 ```
+
+### `verify`
+
+Prove that backup files on disk are actually restorable. Exits non-zero if any artifact fails,
+so it can gate a cron job or a restore drill.
+
+- `--engine, -e TEXT` — restrict to one engine folder
+- `--project, -p TEXT` — restrict to one project folder
+- `--db, -d TEXT` — restrict to these database folders (repeatable)
+- `--latest, -l` — verify only the newest backup per database
+- `--checksum, -k` — also compute a SHA-256 for each artifact
+- `--config, -c PATH`
+
+Checks per type: gzip/zip integrity + SQL headers for `.sql`/`.sql.gz`/`.zip`, the `MICROSOFT`
+media header for `.bak`, `pg_restore --list` for `.dump`/`.dump.gz` (no database connection
+needed), and envelope validation for encrypted artifacts. Types that cannot be checked without an
+external tool report `skip`, not failure.
 
 ### `drop`
 

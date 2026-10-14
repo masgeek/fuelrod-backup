@@ -9,6 +9,7 @@
 | `adapters/` | Engine implementations (postgres, mariadb, mssql) |
 | `backup.py` | Backup wizard, execution, retention cleanup |
 | `restore.py` | Restore wizard, TOC parsing, engine-specific restore |
+| `verify.py` | Offline integrity checks for backup artifacts |
 | `runner.py` | PostgreSQL native + subprocess operations (psycopg3) |
 | `drop.py` | Interactive database/schema drop |
 | `n8n_backup.py` | Hot Docker volume snapshots for n8n |
@@ -110,6 +111,22 @@ Key migration behaviours:
 - Foreign keys appended with `DEFERRABLE INITIALLY DEFERRED`
 - Tables with > 1 million rows bypass the thread pool and run sequentially
 - Skipped rows written to `<db>_skipped_rows.jsonl`
+
+## Verify Flow
+
+`verify.py` walks `BASE_DIR` (canonical `<project>/<engine>/<database>/` layout, with a flat
+fallback scan) and applies per-artifact checks that need no database connection:
+
+| Artifact | Checks |
+|----------|--------|
+| `.dump` / `.dump.gz` | gzip integrity, then `pg_restore --list` object count (skipped if `pg_restore` is absent) |
+| `.sql` / `.sql.gz` | gzip integrity, SQL header shape |
+| `.zip` | CRC of every entry via `testzip()` |
+| `.bak` | `MICROSOFT` media header (warns; `RESTORE VERIFYONLY` not run offline) |
+| `.age` / `.gpg` | envelope header only |
+
+Statuses are `ok` / `warn` / `skip` / `fail`; only `fail` sets a non-zero exit code, so an
+unverifiable artifact never blocks a pipeline.
 
 ## n8n Volume Backup/Restore Flow
 

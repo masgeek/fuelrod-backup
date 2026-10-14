@@ -247,6 +247,53 @@ def restore(
     )
 
 
+@app.command("verify")
+def verify(
+        engine: Annotated[
+            str | None,
+            typer.Option("--engine", "-e", help="Restrict to one engine folder: postgres | mariadb | mssql."),
+        ] = None,
+        project: Annotated[
+            str | None,
+            typer.Option("--project", "-p", help="Restrict to one project folder under BASE_DIR."),
+        ] = None,
+        databases: Annotated[
+            list[str],
+            typer.Option("--db", "-d", help="Restrict to these database folders (repeatable)."),
+        ] = [],
+        latest: Annotated[
+            bool,
+            typer.Option("--latest", "-l", help="Verify only the newest backup per database."),
+        ] = False,
+        checksum: Annotated[
+            bool,
+            typer.Option("--checksum", "-k", help="Also compute a SHA-256 for each artifact."),
+        ] = False,
+        config_file: Annotated[Path | None, _CONFIG_OPT] = None,
+) -> None:
+    """Verify that backup files on disk are actually restorable.
+
+    Checks each artifact under BASE_DIR: gzip/zip integrity, SQL headers,
+    SQL Server backup headers, and — when pg_restore is available — the
+    PostgreSQL table of contents. Exits non-zero if any artifact fails.
+    """
+    from .verify import run_verify
+
+    cfg = load_config(config_file)
+    if engine:
+        _validate_db_type(engine)
+    code = run_verify(
+        cfg,
+        engine=engine,
+        project=project,
+        database=databases[0] if databases else None,
+        latest_only=latest,
+        checksum=checksum,
+    )
+    if code:
+        raise typer.Exit(code=code)
+
+
 @app.command("drop")
 def drop(
         disconnect_only: Annotated[bool, typer.Option(
