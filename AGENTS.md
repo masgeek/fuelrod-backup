@@ -7,7 +7,7 @@ Python 3.13+, Poetry-managed CLI (`fuelrod-backup` / short alias `fr-bkp`).
 ```bash
 poetry install                      # virtualenvs live in ./.venv (poetry.toml)
 poetry run ruff check .             # lint — CI gate, must pass first
-poetry run pytest -q                # 413 fast unit tests, no DB/docker/network required
+poetry run pytest -q                # 435 fast unit tests, no DB/docker/network required
 poetry run pytest tests/test_migrate_types.py -q   # single file
 poetry run pytest -k toc -q                        # single test by name
 poetry run fuelrod-backup --help                   # CI smoke-tests the entry point
@@ -23,7 +23,7 @@ No mypy/format tooling — ruff only. CI (`.github/workflows/pr-checks.yml`) run
 - `runner.py::PgRunner` is the PostgreSQL workhorse: psycopg3 for all queries/admin ops, subprocess **only** for `pg_dump` / `pg_restore` / `docker cp`. `psql` is not used.
 - `migrate/` is a self-contained MariaDB→PostgreSQL pipeline (types → transform → schema → data → validate → report); `__init__.py::run_migrate()` is the public entry.
 - `verify.py` / `doctor.py` / `crypto.py` / `storage.py` / `notify.py` / `output.py` are cross-cutting: verify + doctor gate automation, crypto does encryption at rest, storage does off-site sync, notify owns the exit-code contract, output owns `--json`.
-- `--json` works because every module console is built as `register(Console())` (`output.py`), which lets `enable_json()` null them all. A module that prints outside its JSON payload must write to **stderr** or it corrupts stdout parsing.
+- `--json` works because every module console is built as `register(Console())` (`output.py`), which lets `enable_json()` null them all. A module that prints outside its JSON payload must write to **stderr** or it corrupts stdout parsing — and a fatal error must go through `output.error()` / `cli._fail()`, since a nulled console silently swallows anything printed through it. Commands with a selection wizard must require the target explicitly under `--json` (no one can answer the prompt).
 - Off-site sync shells out to the `rclone` **binary** (`storage.py`), not the `rclone-python` package — that distribution installs its module as `rclone_python`, and its API builds shell strings.
 
 ## Hard rules

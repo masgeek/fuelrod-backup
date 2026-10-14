@@ -1165,6 +1165,7 @@ def migrate(
             Path | None,
             typer.Option("--report", "-r", help="Write JSON migration report to this file."),
         ] = None,
+        as_json: Annotated[bool, _JSON_OPT] = False,
         config_file: Annotated[Path | None, _CONFIG_OPT] = None,
 ) -> None:
     """Migrate one or more databases from MariaDB to PostgreSQL.
@@ -1175,6 +1176,7 @@ def migrate(
     from .config import DbType
     from .migrate import run_migrate
 
+    _enable_json(as_json)
     all_cfgs = load_all_configs(config_file)
     src_cfgs = [c for c in all_cfgs if c.db_type == DbType.MARIADB]
     dst_cfgs = [c for c in all_cfgs if c.db_type == DbType.POSTGRES]

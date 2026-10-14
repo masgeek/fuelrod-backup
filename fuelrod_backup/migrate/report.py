@@ -120,17 +120,21 @@ class MigrationReport:
                     for w in r.warnings:
                         console.print(f"  [yellow]warn [{r.table}]:[/] {w}")
 
-    def write_json(self, path: Path) -> None:
-        data = {
-            "tables": [asdict(r) for r in self.results],
+    def to_dict(self) -> dict:
+        """Serializable report — the same document `write_json` and --json emit."""
+        results = self.results
+        return {
+            "tables": [asdict(r) for r in results],
             "summary": {
-                "total": len(self._results),
-                "ok": sum(1 for r in self._results if r.status == "ok"),
-                "failed": sum(1 for r in self._results if r.status == "failed"),
-                "partial": sum(1 for r in self._results if r.status == "partial"),
-                "skipped": sum(1 for r in self._results if r.status == "skipped"),
-                "total_rows_migrated": sum(r.rows_dest for r in self._results),
-                "total_rows_skipped": sum(r.rows_skipped for r in self._results),
+                "total": len(results),
+                "ok": sum(1 for r in results if r.status == "ok"),
+                "failed": sum(1 for r in results if r.status == "failed"),
+                "partial": sum(1 for r in results if r.status == "partial"),
+                "skipped": sum(1 for r in results if r.status == "skipped"),
+                "total_rows_migrated": sum(r.rows_dest for r in results),
+                "total_rows_skipped": sum(r.rows_skipped for r in results),
             },
         }
-        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+    def write_json(self, path: Path) -> None:
+        path.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")

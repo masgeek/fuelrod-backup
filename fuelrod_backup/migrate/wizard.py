@@ -10,8 +10,9 @@ from rich.panel import Panel
 from .. import prompt as questionary
 from ..adapters.mariadb import MariaDbAdapter
 from ..notify import EXIT_ABORTED
+from ..output import register
 
-console = Console()
+console = register(Console())
 
 
 def _section(title: str) -> None:

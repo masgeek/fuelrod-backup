@@ -20,7 +20,7 @@
 | `n8n_restore.py` | Volume archive restore for n8n |
 | `storage.py` | Off-site upload to any rclone remote (Drive, S3, B2, SFTP, …) |
 | `gdrive_sync.py` | Backward-compatible Drive-only wrapper over `storage.py` |
-| `migrate/` | MariaDB → PostgreSQL migration subsystem |
+| `migrate/` | MariaDB → PostgreSQL migration subsystem (`report.to_dict()` feeds both `--report` and `--json`) |
 | `prompt.py` | questionary wrapper with safe Ctrl+C handling |
 
 ## Adapter Pattern

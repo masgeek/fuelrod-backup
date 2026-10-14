@@ -250,6 +250,7 @@ Migrate a MariaDB database to PostgreSQL. Extracts schema from `information_sche
 - `--skip-table TEXT` — repeatable; exclude table(s)
 - `--only-table TEXT` — repeatable; migrate only these table(s)
 - `--report, -r PATH` — write JSON migration report to file
+- `--json` — emit the migration report on stdout instead of the summary table
 - `--config, -c PATH`
 
 ### `n8n-backup`
@@ -341,7 +342,12 @@ fuelrod-backup doctor --json | jq '.summary'
 fuelrod-backup verify --json --latest | jq '.artifacts[] | select(.status=="fail")'
 ```
 
-Supported today: `backup`, `restore`, `verify`, `doctor` and `drop --disconnect-only`.
+Supported by every command that has a result worth reading: `backup`, `restore`, `verify`, `doctor`,
+`create`, `drop --disconnect-only`, `n8n-backup`, `n8n-restore`, `sync` and `migrate`.
+
+Errors never travel inside the JSON document — they go to stderr with the exit code, so stdout always
+parses. Commands whose wizard normally picks the target require it explicitly under `--json`
+(`n8n-restore --service --file`, `restore -n --project --db`).
 
 ## Config
 
