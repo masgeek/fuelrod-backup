@@ -19,7 +19,7 @@
 | `n8n_backup.py` | Hot Docker volume snapshots for n8n |
 | `n8n_restore.py` | Volume archive restore for n8n |
 | `storage.py` | Off-site upload to any rclone remote (Drive, S3, B2, SFTP, …) |
-| `gdrive_sync.py` | Backward-compatible Drive-only wrapper over `storage.py` |
+| `storage.py` | Generalizes off-site sync to any rclone backend; supports S3 credentials in config |
 | `migrate/` | MariaDB → PostgreSQL migration subsystem (`report.to_dict()` feeds both `--report` and `--json`) |
 | `prompt.py` | questionary wrapper with safe Ctrl+C handling |
 
@@ -202,9 +202,7 @@ backend is a data change, not a code change.
 
 Failure handling keeps the original safety guarantee: `_upload()` raises `StorageError` on a failed
 transfer, which aborts before any local deletion; a prune failure for one pattern is recorded and
-reported without aborting the rest. `gdrive-sync` remains as a Drive-only wrapper with the
-`gdrive:<GDRIVE>` default.
-
+reported without aborting the rest. `sync` handles the transfer using a generalized rclone backend.
 ## Google Drive Sync Flow
 
 1. Resolve backup files matching glob include patterns.

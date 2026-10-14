@@ -23,7 +23,6 @@ from fuelrod_backup.storage import (
 
 class TestParseRemote:
     @pytest.mark.parametrize("spec,provider,path", [
-        ("gdrive:backups/db", "gdrive", "backups/db"),
         ("s3:my-bucket/backups", "s3", "my-bucket/backups"),
         ("b2:bucket", "b2", "bucket"),
         ("sftp:host:/srv/backups", "sftp", "host:/srv/backups"),
@@ -33,7 +32,7 @@ class TestParseRemote:
         assert (remote.provider, remote.path) == (provider, path)
 
     def test_trailing_slash_is_normalised(self):
-        assert parse_remote("gdrive:backups/").path == "backups"
+        assert parse_remote("s3:backups/").path == "backups"
 
     def test_case_insensitive_provider(self):
         assert parse_remote("S3:bucket").provider == "s3"
@@ -52,10 +51,6 @@ class TestParseRemote:
 
 
 class TestProviderArgs:
-    def test_drive_disables_trash(self):
-        # Pruning through Drive's trash would keep a second copy of everything.
-        assert provider_args("gdrive") == ["--drive-use-trash=false"]
-
     def test_s3_provider_pinned_when_configured(self):
         cfg = Config()
         cfg.s3_provider = "Minio"
@@ -100,13 +95,13 @@ class FakeCompleted:
 
 
 class TestListRemotes:
-    def test_parses_remote_names(self, monkeypatch):
+    def test_list_remotes(self, monkeypatch):
         monkeypatch.setattr(storage, "rclone_available", lambda: True)
         monkeypatch.setattr(
             storage.subprocess, "run",
-            lambda *a, **kw: FakeCompleted(stdout=b"gdrive:\ns3:\n"),
+            lambda *a, **kw: FakeCompleted(stdout=b"s3:\nb2:\n"),
         )
-        assert list_remotes() == ["gdrive", "s3"]
+        assert list_remotes() == ["s3", "b2"]
 
     def test_failure_is_reported(self, monkeypatch):
         monkeypatch.setattr(storage, "rclone_available", lambda: True)
@@ -125,15 +120,18 @@ class TestListRemotes:
 def _cfg(base: Path) -> Config:
     c = Config()
     c.base_dir = str(base)
-    c.gdrive_remote = "db-backup"
-    c.gdrive_include = ["*.sql.gz"]
+    c.s3_remote = "db-backup"
+    c.s3_bucket = "backups"
     return c
 
 
 @pytest.fixture()
 def tree(tmp_path):
-    (tmp_path / "proj" / "postgres" / "app").mkdir(parents=True)
-    (tmp_path / "proj" / "postgres" / "app" / "app_20260101.sql.gz").write_bytes(b"x" * 100)
+    # Now we must create the engine sub-directory because run_sync uses cfg.backup_dir
+    engine_dir = tmp_path / "postgres"
+    engine_dir.mkdir()
+    (engine_dir / "proj" / "postgres" / "app").mkdir(parents=True)
+    (engine_dir / "proj" / "postgres" / "app" / "app_20260101.sql.gz").write_bytes(b"x" * 100)
     return tmp_path
 
 
@@ -153,37 +151,37 @@ class TestRunSync:
         calls: list = []
         self._patch(monkeypatch, calls)
 
-        assert run_sync(_cfg(tree), remote="s3:bucket/x", dry_run=True, delete_local=False) == 0
+        assert run_sync(_cfg(tree), remote="s3:bucket/x", dry_run=True, delete_local=False, interactive=False) == 0
 
         assert [c for c in calls if c[1] == "copy"] == [], "dry run must not copy"
-        assert (tree / "proj" / "postgres" / "app" / "app_20260101.sql.gz").exists()
+        assert (tree / "postgres" / "proj" / "postgres" / "app" / "app_20260101.sql.gz").exists()
 
     def test_upload_then_local_delete(self, monkeypatch, tree):
         calls: list = []
         self._patch(monkeypatch, calls)
 
-        assert run_sync(_cfg(tree), remote="s3:bucket/x", delete_local=True) == 0
+        assert run_sync(_cfg(tree), remote="s3:bucket/x", delete_local=True, interactive=False, include_patterns=["*.sql.gz"]) == 0
 
         assert any(c[1] == "copy" for c in calls)
-        assert not (tree / "proj" / "postgres" / "app" / "app_20260101.sql.gz").exists()
+        assert not (tree / "postgres" / "proj" / "postgres" / "app" / "app_20260101.sql.gz").exists()
 
     def test_keep_local_leaves_files(self, monkeypatch, tree):
         calls: list = []
         self._patch(monkeypatch, calls)
 
-        run_sync(_cfg(tree), remote="s3:bucket/x", delete_local=False)
+        run_sync(_cfg(tree), remote="s3:bucket/x", delete_local=False, interactive=False, include_patterns=["*.sql.gz"])
 
-        assert (tree / "proj" / "postgres" / "app" / "app_20260101.sql.gz").exists()
+        assert (tree / "postgres" / "proj" / "postgres" / "app" / "app_20260101.sql.gz").exists()
 
     def test_failed_upload_keeps_local_files(self, monkeypatch, tree):
         calls: list = []
         self._patch(monkeypatch, calls, copy_rc=1)
 
         with pytest.raises(SystemExit) as exc:
-            run_sync(_cfg(tree), remote="s3:bucket/x", delete_local=True)
+            run_sync(_cfg(tree), remote="s3:bucket/x", delete_local=True, interactive=False, include_patterns=["*.sql.gz"])
 
         assert exc.value.code == 1
-        assert (tree / "proj" / "postgres" / "app" / "app_20260101.sql.gz").exists(), \
+        assert (tree / "postgres" / "proj" / "postgres" / "app" / "app_20260101.sql.gz").exists(), \
             "a failed upload must never delete the local backup"
 
     def test_prune_failure_does_not_abort(self, monkeypatch, tree):
@@ -195,14 +193,16 @@ class TestRunSync:
         monkeypatch.setattr(storage, "rclone_available", lambda: True)
         monkeypatch.setattr(storage.subprocess, "run", fake_run)
 
-        assert run_sync(_cfg(tree), remote="s3:bucket/x", delete_local=False) == 0
+        assert run_sync(_cfg(tree), remote="s3:bucket/x", delete_local=False, interactive=False, include_patterns=["*.sql.gz"]) == 0
 
     def test_no_matching_files_is_a_success(self, monkeypatch, tmp_path):
         monkeypatch.setattr(storage, "rclone_available", lambda: True)
         monkeypatch.setattr(storage.subprocess, "run", lambda *a, **kw: FakeCompleted())
+        (tmp_path / "postgres").mkdir()
         cfg = _cfg(tmp_path)
-        cfg.gdrive_include = ["*.nothing"]
-        assert run_sync(cfg, remote="s3:bucket/x") == 0
+        # We use a dummy include pattern to ensure no files match
+        # We'll pass it to run_sync instead of setting it on cfg
+        assert run_sync(cfg, remote="s3:bucket/x", include_patterns=["*.nothing"], interactive=False) == 0
 
     def test_missing_base_dir_aborts(self, monkeypatch, tmp_path):
         monkeypatch.setattr(storage, "rclone_available", lambda: True)

@@ -291,11 +291,11 @@ def check_encryption(cfg: Config, report: Report) -> None:
 def check_rclone(cfg: Config, report: Report) -> None:
     if not shutil.which("rclone"):
         report.add(
-            "rclone (gdrive-sync)", "skip", "not installed",
-            "Only needed for `gdrive-sync` — install from https://rclone.org/install/",
+            "rclone (off-site)", "skip", "not installed",
+            "Only needed for sync — install from https://rclone.org/install/",
         )
         return
-
+    
     try:
         remotes = subprocess.run(
             ["rclone", "listremotes"], capture_output=True, timeout=15, check=False
@@ -306,19 +306,21 @@ def check_rclone(cfg: Config, report: Report) -> None:
             if line.strip()
         }
     except (OSError, subprocess.TimeoutExpired) as exc:
-        report.add("rclone (gdrive-sync)", "warn", f"listremotes failed: {exc}")
+        report.add("rclone (off-site)", "warn", f"listremotes failed: {exc}")
         return
 
-    wanted = cfg.gdrive_remote.split(":", 1)[0]
-    if not wanted:
-        report.add("rclone (gdrive-sync)", "warn", "GDRIVE is empty", "Set GDRIVE to a remote name.")
-    elif wanted in names:
-        report.add("rclone (gdrive-sync)", "ok", f"remote '{wanted}' configured")
-    else:
-        report.add(
-            "rclone (gdrive-sync)", "warn", f"remote '{wanted}' not configured",
-            "Run `rclone config` — gdrive-sync will fail until it exists.",
-        )
+    # 1. Check S3 configuration
+    if cfg.s3_bucket:
+        remote = cfg.s3_remote or "s3"
+        if remote in names or (cfg.s3_access_key_id and cfg.s3_secret_access_key):
+            report.add("rclone (S3)", "ok", f"target {remote} configured")
+        else:
+            report.add(
+                "rclone (S3)", "warn", f"remote '{remote}' not configured",
+                "Run `fuelrod-backup init` or `rclone config` to set up S3.",
+            )
+
+
 
 
 def check_n8n_services(cfg: Config, report: Report) -> None:

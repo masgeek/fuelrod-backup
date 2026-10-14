@@ -136,6 +136,10 @@ def backup(
             list[str],
             typer.Option("--db", "-d", help="Database(s) to back up (repeatable). Default: all."),
         ] = [],
+        schemas: Annotated[
+            list[str],
+            typer.Option("--schema", "-s", help="Schemas to back up (repeatable). Only applies to supported engines."),
+        ] = [],
         use_docker: Annotated[bool | None, _DOCKER_OPT] = None,
         db_type: Annotated[str | None, _DB_TYPE_OPT] = None,
         as_json: Annotated[bool, _JSON_OPT] = False,
@@ -160,6 +164,8 @@ def backup(
         run_parallel_backup(
             configs,
             databases=list(databases) or None,
+            schemas=list(schemas),
+
             compress=compress,
             keep_days=keep_days,
         )
@@ -175,6 +181,7 @@ def backup(
         databases=list(databases) or None,
         compress=compress,
         keep_days=keep_days,
+        schemas=list(schemas),
     )
 
 
@@ -460,6 +467,7 @@ def test_connection(
         use_docker: Annotated[bool | None, _DOCKER_OPT] = None,
         db_type: Annotated[str | None, _DB_TYPE_OPT] = None,
         config_file: Annotated[Path | None, _CONFIG_OPT] = None,
+        as_json: Annotated[bool, _JSON_OPT] = False,
 ) -> None:
     """Test the database connection and print resolved settings."""
     from .adapters import get_adapter
@@ -468,30 +476,55 @@ def test_connection(
     cfg = load_config(config_file, db_type_override=db_type)
     _apply_docker_override(cfg, use_docker)
 
-    pass_hint = f"{'*' * min(len(cfg.password), 6)}  ({len(cfg.password)} chars)" if cfg.password else "[red]NOT SET[/]"
-    source = str(cfg.config_source) if cfg.config_source else "[red]none found — using defaults only[/]"
-    docker_override = " [yellow](CLI override)[/]" if use_docker is not None else ""
+    _enable_json(as_json)
+    if not as_json:
+        pass_hint = (
+            f"{'*' * min(len(cfg.password), 6)}  ({len(cfg.password)} chars)"
+            if cfg.password else "[red]NOT SET[/]"
+        )
+        source = str(cfg.config_source) if cfg.config_source else "[red]none found — using defaults only[/]"
+        docker_override = " [yellow](CLI override)[/]" if use_docker is not None else ""
 
-    console.print()
-    console.print("[bold]Resolved settings:[/]")
-    console.print(f"  Config source : {source}")
-    console.print(f"  DB type       : [cyan]{cfg.db_type.value}[/]")
-    mode = f"[cyan]Docker[/] — service {cfg.service!r}" if cfg.use_docker else "Direct"
-    console.print(f"  Mode          : {mode}{docker_override}")
-    console.print(f"  Host          : {cfg.host}:{cfg.port}")
-    console.print(f"  User          : {cfg.user}")
-    console.print(f"  Password      : {pass_hint}")
-    console.print(f"  Backup dir    : {cfg.backup_dir}")
-    console.print(f"  Compress      : {cfg.compress}")
-    console.print(f"  Retain        : {cfg.days_to_keep} days")
-    console.print()
+        console.print()
+        console.print("[bold]Resolved settings:[/]")
+        console.print(f"  Config source : {source}")
+        console.print(f"  DB type       : [cyan]{cfg.db_type.value}[/]")
+        mode = f"[cyan]Docker[/] — service {cfg.service!r}" if cfg.use_docker else "Direct"
+        console.print(f"  Mode          : {mode}{docker_override}")
+        console.print(f"  Host          : {cfg.host}:{cfg.port}")
+        console.print(f"  User          : {cfg.user}")
+        console.print(f"  Password      : {pass_hint}")
+        console.print(f"  Backup dir    : {cfg.backup_dir}")
+        console.print(f"  Compress      : {cfg.compress}")
+        console.print(f"  Retain        : {cfg.days_to_keep} days")
+        console.print()
 
     adapter = get_adapter(cfg)
     try:
         adapter.check_connection()
-        console.print("[bold green]✓ Connection successful.[/]")
+        if as_json:
+            import json
+            print(json.dumps({
+                "config_source": str(cfg.config_source) if cfg.config_source else None,
+                "db_type": cfg.db_type.value,
+                "mode": "docker" if cfg.use_docker else "direct",
+                "host": f"{cfg.host}:{cfg.port}",
+                "user": cfg.user,
+                "password_set": bool(cfg.password),
+                "backup_dir": cfg.backup_dir,
+                "connection_successful": True,
+            }, indent=2))
+        else:
+            console.print("[bold green]✓ Connection successful.[/]")
     except Exception as exc:
-        console.print(f"[bold red]✗ Connection failed:[/] {exc}")
+        if as_json:
+            import json
+            print(json.dumps({
+                "connection_successful": False,
+                "error": str(exc),
+            }, indent=2))
+        else:
+            console.print(f"[bold red]✗ Connection failed:[/] {exc}")
         raise typer.Exit(code=1)
 
 
@@ -501,6 +534,7 @@ def init_config(
             Path,
             typer.Option("--output", "-o", help="Path for the config file.", dir_okay=False),
         ] = None,
+        as_json: Annotated[bool, _JSON_OPT] = False,
 ) -> None:
     """Create or update a .backup config file interactively."""
     from . import prompt as q
@@ -510,6 +544,23 @@ def init_config(
         output = user_config_dir() / ".backup"
     output = output.resolve()
     updating = output.exists()
+
+    _enable_json(as_json)
+    if as_json:
+        import json
+        cfg = load_config(None)
+        print(json.dumps({
+            "output_file": str(output),
+            "proposed_keys": {
+                "DB_TYPE": cfg.db_type.value,
+                "DB_USERNAME": cfg.user,
+                "DB_HOST": cfg.host,
+                "DB_PORT": str(cfg.port),
+                "BASE_DIR": cfg.base_dir,
+                "KEEP_DAYS": cfg.days_to_keep,
+            }
+        }, indent=2))
+        return
 
     existing_source: Path | None = output if updating else _find_config_file()
     existing_cfg = load_config(existing_source) if existing_source else None
@@ -552,6 +603,105 @@ def init_config(
 # ──────────────────────────────────────────────────────────────────────────────
 #  init helpers
 # ──────────────────────────────────────────────────────────────────────────────
+
+def _init_generic_remote(q, output: Path, updating: bool, existing_raw: dict[str, str]) -> dict[str, str]:
+    """Collect a generic rclone remote string."""
+    console.print()
+    console.rule("[bold cyan]Off-site Generic Remote[/]")
+    ex_remote = existing_raw.get("REMOTE", "")
+    remote = q.text(
+        "rclone remote spec (REMOTE)\n"
+        "Example: 'sftp:user@host:/path' or 'b2:bucket/folder' or '/mnt/backups'",
+        default=ex_remote
+    ).ask() or ex_remote
+    return {"REMOTE": remote} if remote else {}
+
+    lines = output.read_text(encoding="utf-8").splitlines()
+    new_lines = []
+    set_keys = set()
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            new_lines.append(line)
+            continue
+        if "=" in stripped:
+            key, val = stripped.split("=", 1)
+            if key in keys:
+                new_lines.append(f"{key}={keys[key]}")
+                set_keys.add(key)
+                continue
+        new_lines.append(line)
+
+    # Add new keys at the end
+    for key, val in keys.items():
+        if key not in set_keys:
+            new_lines.append(f"{key}={val}")
+
+    output.write_text("\n".join(new_lines), encoding="utf-8")
+    output.chmod(0o600)
+
+def _init_s3_remote(q, output: Path, updating: bool, existing_raw: dict[str, str]) -> dict[str, str]:
+    from . import rclone_config
+    
+    console.print()
+    console.rule("[bold cyan]Off-site S3 Target[/]")
+    
+    ex_remote = existing_raw.get("S3_REMOTE", "s3-backup")
+    remote_name = q.text("rclone remote name (S3_REMOTE)", default=ex_remote).ask() or ex_remote
+    
+    ex_bucket = existing_raw.get("S3_BUCKET", "")
+    bucket = q.text("S3 bucket (S3_BUCKET)", default=ex_bucket).ask() or ex_bucket
+    if not bucket:
+        console.print("[yellow]Skipping S3 config (bucket required).[/]")
+        return {}
+
+    ex_prefix = existing_raw.get("S3_PREFIX", "")
+    prefix = q.text("S3 key prefix (S3_PREFIX)", default=ex_prefix).ask() or ex_prefix
+    
+    ex_provider = existing_raw.get("S3_PROVIDER", "")
+    provider_choice = q.select(
+        "S3 provider",
+        choices=[q.Choice(label, v) for label, v in rclone_config.S3_PROVIDERS],
+        default=ex_provider or "",
+    ).ask()
+    provider_val = provider_choice.value if hasattr(provider_choice, "value") else provider_choice
+
+    ex_region = existing_raw.get("S3_REGION", "")
+    region = q.text("S3 region (S3_REGION)", default=ex_region).ask() or ex_region
+    
+    ex_endpoint = existing_raw.get("S3_ENDPOINT", "")
+    endpoint = q.text("S3 endpoint (S3_ENDPOINT) [leave blank for AWS]", default=ex_endpoint).ask() or ex_endpoint
+
+    console.print("\n  S3 credentials can be stored in rclone config or .backup file.")
+    use_env_auth = q.confirm("Store keys in rclone config? (secrets will NOT be in .backup)", default=True).ask()
+    
+    ex_access = existing_raw.get("S3_ACCESS_KEY_ID", "")
+    ex_secret = existing_raw.get("S3_SECRET_ACCESS_KEY", "")
+    
+    access_key = q.text("Access Key ID (S3_ACCESS_KEY_ID)", default=ex_access).ask() or ex_access
+    secret_key = q.password("Secret Access Key (S3_SECRET_ACCESS_KEY)", default=ex_secret).ask() or ex_secret
+
+    try:
+        rclone_config.write_remote(
+            remote_name,
+            "s3",
+            rclone_config.s3_options(access_key, secret_key, provider_val, region, endpoint, not use_env_auth)
+        )
+        console.print(f"[bold green]✓[/] rclone remote {remote_name} configured.")
+    except Exception as exc:
+        console.print(f"[bold red]✗[/] rclone config failed: {exc}")
+
+    return {
+        "S3_REMOTE": remote_name,
+        "S3_BUCKET": bucket,
+        "S3_PREFIX": prefix,
+        "S3_PROVIDER": provider_val,
+        "S3_REGION": region,
+        "S3_ENDPOINT": endpoint,
+        "S3_ACCESS_KEY_ID": access_key,
+        "S3_SECRET_ACCESS_KEY": secret_key,
+    }
 
 def _write_config(output: Path, lines: list[str], updating: bool) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -764,6 +914,30 @@ def _init_multi_engine(q, output: Path, updating: bool, existing_raw: dict[str, 
             lines.append(f"{prefix}{short}={val}")
         lines.append("")
 
+    # Off-site sync
+    if q.confirm("\nConfigure an off-site sync remote now?", default=False).ask():
+        remote_type = q.select(
+            "Remote configuration type",
+            choices=[
+                q.Choice("Guided S3 Setup", value="s3"),
+                q.Choice("Generic rclone remote", value="generic"),
+            ],
+            default="s3",
+        ).ask()
+        
+        if remote_type == "s3":
+            s3_keys = _init_s3_remote(q, output, updating, existing_raw)
+            for k, v in s3_keys.items():
+                lines.append(f"{k}={v}")
+            if s3_keys:
+                lines.append("")
+        else:
+            gen_keys = _init_generic_remote(q, output, updating, existing_raw)
+            for k, v in gen_keys.items():
+                lines.append(f"{k}={v}")
+            if gen_keys:
+                lines.append("")
+
     _write_config(output, lines, updating)
 
 
@@ -950,7 +1124,69 @@ def _init_single_engine(q, output: Path, updating: bool, existing_cfg, existing_
             "",
         ]
 
+    # Off-site sync
+    if q.confirm("\nConfigure an off-site sync remote now?", default=False).ask():
+        remote_type = q.select(
+            "Remote configuration type",
+            choices=[
+                q.Choice("Guided S3 Setup", value="s3"),
+                q.Choice("Generic rclone remote", value="generic"),
+            ],
+            default="s3",
+        ).ask()
+        
+        if remote_type == "s3":
+            s3_keys = _init_s3_remote(q, output, updating, existing_raw)
+            for k, v in s3_keys.items():
+                lines.append(f"{k}={v}")
+            if s3_keys:
+                lines.append("")
+        else:
+            gen_keys = _init_generic_remote(q, output, updating, existing_raw)
+            for k, v in gen_keys.items():
+                lines.append(f"{k}={v}")
+            if gen_keys:
+                lines.append("")
+
     _write_config(output, lines, updating)
+
+
+@app.command("sync-init")
+def sync_init(
+        output: Annotated[
+            Path,
+            typer.Option("--output", "-o", help="Path for the config file.", dir_okay=False),
+        ] = None,
+) -> None:
+    """Configure off-site sync settings without running a full init wizard."""
+    from . import prompt as q
+    from .config import _parse_env_file, user_config_dir
+
+    if output is None:
+        output = user_config_dir() / ".backup"
+    output = output.resolve()
+
+    existing_raw = _parse_env_file(output) if output.is_file() else {}
+
+    remote_type = q.select(
+        "Remote configuration type",
+        choices=[
+            q.Choice("Guided S3 Setup", value="s3"),
+            q.Choice("Generic rclone remote", value="generic"),
+        ],
+        default="s3",
+    ).ask()
+
+    if remote_type == "s3":
+        keys = _init_s3_remote(q, output, output.exists(), existing_raw)
+    else:
+        keys = _init_generic_remote(q, output, output.exists(), existing_raw)
+
+    if keys:
+        _update_config_keys(output, keys)
+        console.print(f"\n[bold green]✓[/] Sync settings updated in [bold]{output}[/]")
+    else:
+        console.print("\n[yellow]No changes made to config.[/]")
 
 
 @app.command("n8n-backup")
@@ -1003,48 +1239,6 @@ def n8n_restore_cmd(
     run_n8n_restore(cfg, service=service, backup_file=backup_file, dry_run=dry_run, verbose=verbose)
 
 
-@app.command("gdrive-sync")
-def gdrive_sync_cmd(
-        dry_run: Annotated[
-            bool,
-            typer.Option("--dry-run", "-d", help="Show what would happen — no files moved or deleted."),
-        ] = False,
-        gdrive: Annotated[
-            str | None,
-            typer.Option("--gdrive", "-g", help="Google Drive remote folder name (overrides GDRIVE)."),
-        ] = None,
-        days: Annotated[
-            int | None,
-            typer.Option("--days", "-n", help="Prune remote files older than N days (overrides BACKUP_AGE)."),
-        ] = None,
-        include: Annotated[
-            list[str],
-            typer.Option("--include", "-i", help="Glob pattern to include (repeatable, overrides INCLUDE_FILES)."),
-        ] = [],
-        keep_local: Annotated[
-            bool,
-            typer.Option("--keep-local", help="Do NOT delete local files after a successful upload."),
-        ] = False,
-        config_file: Annotated[Path | None, _CONFIG_OPT] = None,
-) -> None:
-    """Sync local backups to Google Drive via rclone, then prune old remote files.
-
-    Kept for backward compatibility — `sync` is the general form and accepts any
-    rclone remote (s3:, b2:, sftp:, ...).
-    """
-    from .gdrive_sync import run_gdrive_sync
-
-    cfg = load_config(config_file)
-    run_gdrive_sync(
-        cfg,
-        dry_run=dry_run,
-        gdrive_remote=gdrive,
-        age_days=days,
-        include_patterns=list(include) or None,
-        delete_local=not keep_local,
-    )
-
-
 @app.command("sync")
 def sync_cmd(
         remote: Annotated[
@@ -1074,6 +1268,30 @@ def sync_cmd(
             bool,
             typer.Option("--list-remotes", help="List the rclone remotes configured on this host and exit."),
         ] = False,
+        no_interactive: Annotated[
+            bool,
+            typer.Option("--no-interactive", "-ni", help="Skip interactive selection of schemas and date range."),
+        ] = False,
+        transfers: Annotated[
+            int | None,
+            typer.Option("--transfers", help="Number of parallel file transfers. Default: 4."),
+        ] = None,
+        checkers: Annotated[
+            int | None,
+            typer.Option("--checkers", help="Number of parallel checkers. Default: 8."),
+        ] = None,
+        since: Annotated[
+            int | None,
+            typer.Option("--since", help="Only upload files modified in the last N days."),
+        ] = None,
+        until: Annotated[
+            int | None,
+            typer.Option("--until", help="Only upload files modified before N days ago."),
+        ] = None,
+        schema: Annotated[
+            list[str],
+            typer.Option("--schema", "-s", help="Only upload artifacts for these databases/schemas (repeatable)."),
+        ] = [],
         as_json: Annotated[bool, _JSON_OPT] = False,
         config_file: Annotated[Path | None, _CONFIG_OPT] = None,
 ) -> None:
@@ -1083,18 +1301,24 @@ def sync_cmd(
     (MinIO, Wasabi), Backblaze B2, SFTP, Azure Blob, WebDAV. Local files are
     deleted only after a successful upload.
     """
-    from .storage import run_sync
+    from .storage import default_remote, run_sync
 
     _enable_json(as_json)
     cfg = load_config(config_file)
     code = run_sync(
         cfg,
-        remote=remote or f"gdrive:{cfg.gdrive_remote}",
+        remote=remote or default_remote(cfg),
         dry_run=dry_run,
         age_days=days,
         include_patterns=list(include) or None,
         delete_local=not keep_local,
         show_remotes=list_remotes,
+        transfers=transfers,
+        checkers=checkers,
+        since=since,
+        until=until,
+        schemas=list(schema),
+        interactive=not no_interactive,
     )
     if code:
         raise typer.Exit(code=code)

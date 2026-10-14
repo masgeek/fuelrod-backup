@@ -10,7 +10,9 @@ poetry run ruff check .             # lint — CI gate, must pass first
 poetry run pytest -q                # 435 fast unit tests, no DB/docker/network required
 poetry run pytest tests/test_migrate_types.py -q   # single file
 poetry run pytest -k toc -q                        # single test by name
+poetry run pytest -k toc -q                        # single test by name
 poetry run fuelrod-backup --help                   # CI smoke-tests the entry point
+poetry run fuelrod-backup sync-init                # configure S3/rclone remote separately
 poetry build
 ```
 
@@ -18,7 +20,7 @@ No mypy/format tooling — ruff only. CI (`.github/workflows/pr-checks.yml`) run
 
 ## Architecture (non-obvious bits)
 
-- `fuelrod_backup/cli.py` is the only Typer app; every command is a thin wrapper that loads config then calls a module function (`backup.py`, `restore.py`, `drop.py`, `create.py`, `n8n_*.py`, `gdrive_sync.py`, `migrate/__init__.py`).
+- `fuelrod_backup/cli.py` is the only Typer app; every command is a thin wrapper that loads config then calls a module function (`backup.py`, `restore.py`, `drop.py`, `create.py`, `n8n_*.py`, `migrate/__init__.py`).
 - `adapters/` holds the engine implementations behind `DbAdapter` (`adapters/base.py`), selected by `adapters/__init__.py::get_adapter(cfg)`. **Add new engine capabilities as capability flags (`supports_schemas`, `supports_roles`, `supports_toc`, `supports_schema_drop`, `dump_extension`), not `if db_type == ...` branches** — wizards read those flags to decide which options to show.
 - `runner.py::PgRunner` is the PostgreSQL workhorse: psycopg3 for all queries/admin ops, subprocess **only** for `pg_dump` / `pg_restore` / `docker cp`. `psql` is not used.
 - `migrate/` is a self-contained MariaDB→PostgreSQL pipeline (types → transform → schema → data → validate → report); `__init__.py::run_migrate()` is the public entry.

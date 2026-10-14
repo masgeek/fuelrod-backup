@@ -78,7 +78,7 @@ fuelrod-backup migrate    [OPTIONS]
 fuelrod-backup n8n-backup  [OPTIONS]
 fuelrod-backup n8n-restore [OPTIONS]
 fuelrod-backup sync        [OPTIONS]
-fuelrod-backup gdrive-sync [OPTIONS]  (alias of sync, Drive-only default)
+fuelrod-backup sync [OPTIONS]  Upload backups to an off-site remote via rclone (S3, B2, etc.)
 ```
 
 The short alias `fr-bkp` is equivalent to `fuelrod-backup` for all commands.
@@ -293,11 +293,13 @@ Drive gets `--drive-use-trash=false` so pruning does not keep a second copy in t
 fuelrod-backup sync --list-remotes
 fuelrod-backup sync -r s3:acme-backups/prod --keep-local
 ```
+### `sync`
 
-### `gdrive-sync`
+Upload backups to any rclone remote and prune old files there.
 
-Backward-compatible alias that defaults to `gdrive:<GDRIVE>`. Same options as `sync`, with
-`--gdrive/-g` for the Drive folder name.
+Works with every backend rclone supports: Google Drive, S3, S3-compatible
+(MinIO, Wasabi), Backblaze B2, SFTP, Azure Blob, WebDAV. Local files are
+deleted only after a successful upload.
 
 ## Notifications
 

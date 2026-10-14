@@ -270,15 +270,34 @@ def _wizard_options(cfg: Config) -> None:
     cfg.base_dir = str(Path(raw_base))
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-#  Backup one database
-# ──────────────────────────────────────────────────────────────────────────────
+def _wizard_schemas(cfg: Config, adapter: DbAdapter, db: str) -> list[str]:
+    """Let user pick which schemas to back up for a specific database."""
+    if not adapter.supports_schemas:
+        return []
+
+    _section(f"Schemas for {db}")
+    all_schemas = adapter.get_user_schemas(db)
+    if not all_schemas:
+        console.print("  No user schemas found.")
+        return []
+
+    choices = [questionary.Choice(title=s, value=s) for s in sorted(all_schemas)]
+    selected = questionary.checkbox(
+        "Select schemas to back up (Space to toggle, Enter to confirm, none = all)",
+        choices=choices,
+    ).ask()
+
+    if not selected:
+        console.print("  No selection — backing up [bold]all[/] schemas.")
+        return []
+    return selected
 
 def _backup_one(
         db: str,
         cfg: Config,
         adapter: DbAdapter,
         *,
+        schemas: list[str] | None = None,
         progress=None,
         task_id=None,
 ) -> Path | None:
@@ -288,6 +307,7 @@ def _backup_one(
     Returns None when an incremental backup found nothing to dump, so an
     unchanged database costs nothing.
     """
+
 
     def _phase(desc: str) -> None:
         if task_id is not None:
@@ -350,7 +370,7 @@ def _backup_one(
         adapter.backup_db(
             db,
             dump_file,
-            include_schemas=[],
+            include_schemas=schemas or [],
             exclude_schemas=[],
         )
 
@@ -439,13 +459,9 @@ def run_backup(
         databases: list[str] | None = None,
         compress: bool | None = None,
         keep_days: int | None = None,
+        schemas: list[str] | None = None,
 ) -> None:
-    """Main backup workflow.
-
-    Schema filtering is not applied at dump time — always dumps the full
-    database. For PostgreSQL, schema selection happens at restore time via
-    pg_restore -n (driven by TOC analysis in the restore wizard).
-    """
+    """Main backup workflow."""
     adapter = get_adapter(cfg)
 
     if cfg.encrypt:
@@ -460,6 +476,8 @@ def run_backup(
     if keep_days is not None:
         cfg.days_to_keep = keep_days
 
+    db_schemas: dict[str, list[str]] = {}
+
     if interactive:
         console.print(Panel(f"[bold cyan]{cfg.db_type.value.upper()} Backup Wizard[/]", expand=False))
 
@@ -467,12 +485,19 @@ def run_backup(
 
         selected_dbs = _wizard_databases(cfg, adapter)
 
+        # Collect schemas for each selected database
+        for db in selected_dbs:
+            db_schemas[db] = _wizard_schemas(cfg, adapter, db)
+
         _wizard_options(cfg)
 
         # Summary + confirm
         _section("Summary")
         console.print(f"  Engine      : [cyan]{cfg.db_type.value}[/]")
         console.print(f"  Databases   : [bold]{', '.join(selected_dbs)}[/]")
+        for db in selected_dbs:
+            if db_schemas.get(db):
+                console.print(f"    - {db}: schemas {', '.join(db_schemas[db])}")
         console.print(f"  Compress    : {cfg.compress}")
         console.print(f"  Retention   : {cfg.days_to_keep} days")
         console.print(f"  Output dir  : {cfg.backup_dir}")
@@ -520,7 +545,9 @@ def run_backup(
         for i, db in enumerate(dbs_to_backup, 1):
             task_id = progress.add_task(f"[dim]{db}[/]", total=1, completed=0)
             try:
-                dump_file = _backup_one(db, cfg, adapter, progress=progress, task_id=task_id)
+                # Use wizard-selected schemas or global CLI schemas
+                db_schemas_list = db_schemas.get(db) or schemas
+                dump_file = _backup_one(db, cfg, adapter, schemas=db_schemas_list, progress=progress, task_id=task_id)
                 dumped.append({
                     "database": db,
                     "file": str(dump_file) if dump_file else None,
@@ -530,12 +557,13 @@ def run_backup(
             except subprocess.CalledProcessError as exc:
                 progress.update(task_id, description=f"[red]✗ {db}[/]", completed=1)
                 dumped.append({"database": db, "file": None, "size": 0,
-                               "status": "fail", "error": f"exit code {exc.returncode}"})
+                                "status": "fail", "error": f"exit code {exc.returncode}"})
                 _die(f"Backup failed for '{db}': exit code {exc.returncode}")
             except Exception as exc:
                 progress.update(task_id, description=f"[red]✗ {db}[/]", completed=1)
                 _die(f"Backup failed for '{db}': {exc}")
             progress.update(overall, advance=1, description=f"[bold cyan]{i}/{n} databases[/]")
+
 
     _cleanup_old(str(cfg.backup_dir), cfg.days_to_keep, protect=_protected_bases(Path(cfg.backup_dir)))
 
@@ -568,6 +596,7 @@ def run_parallel_backup(
         databases: list[str] | None = None,
         compress: bool | None = None,
         keep_days: int | None = None,
+        schemas: list[str] | None = None,
 ) -> None:
     """Run non-interactive backups for every engine in *configs* in parallel.
 
@@ -575,7 +604,14 @@ def run_parallel_backup(
     remain readable.  A final summary table shows pass/fail per engine.
     """
     if len(configs) == 1:
-        run_backup(configs[0], interactive=False, databases=databases, compress=compress, keep_days=keep_days)
+        run_backup(
+            configs[0],
+            interactive=False,
+            databases=databases,
+            compress=compress,
+            keep_days=keep_days,
+            schemas=schemas,
+        )
         return
 
     def _backup_engine(
@@ -617,8 +653,11 @@ def run_parallel_backup(
             progress.update(task_id, total=n_dbs, completed=0)
             for i, db in enumerate(dbs_to_backup, 1):
                 _phase(f"[cyan]{engine}[/]  [{i}/{n_dbs}] dumping {db}…")
-                _backup_one(db, cfg, adapter)
+                _backup_one(db, cfg, adapter, schemas=schemas)
                 progress.advance(task_id)
+
+            _cleanup_old(str(cfg.backup_dir), cfg.days_to_keep)
+            return engine, True, ""
 
             _cleanup_old(str(cfg.backup_dir), cfg.days_to_keep)
             return engine, True, ""

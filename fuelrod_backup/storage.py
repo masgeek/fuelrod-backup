@@ -22,8 +22,7 @@ from pathlib import Path
 
 from rich.console import Console
 from rich.panel import Panel
-from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
-from rich.table import Column, Table
+from rich.table import Table
 
 from .config import Config
 from .notify import EXIT_FAILURE, EXIT_OK
@@ -33,7 +32,7 @@ console = register(Console())
 
 # Providers we know about, and the remote names rclone uses for them. Anything
 # else rclone supports still works — it just gets no provider-specific flags.
-KNOWN_PROVIDERS = ("gdrive", "s3", "b2", "sftp", "s3compliant", "azureblob", "webdav")
+KNOWN_PROVIDERS = ("s3", "b2", "sftp", "s3compliant", "azureblob", "webdav")
 
 
 class StorageError(RuntimeError):
@@ -42,8 +41,8 @@ class StorageError(RuntimeError):
 # Transfer tuning shared by every provider.
 TRANSFER_ARGS = [
     "--create-empty-src-dirs",
-    "--transfers", "2",
-    "--checkers", "4",
+    "--transfers", "4",
+    "--checkers", "8",
     "--tpslimit", "10",
     "--bwlimit", "2M",
     "--contimeout", "60s",
@@ -109,15 +108,23 @@ def parse_remote(spec: str) -> Remote:
 
 def provider_args(provider: str, cfg: Config | None = None) -> list[str]:
     """Provider-specific rclone flags."""
-    if provider == "gdrive":
-        # Never route pruning through Drive's trash — it keeps a second copy of
-        # everything we are trying to reclaim space for.
-        return ["--drive-use-trash=false"]
     if provider in ("s3", "s3compliant"):
         args: list[str] = []
-        provider_name = getattr(cfg, "s3_provider", "") if cfg else ""
-        if provider_name:
-            args += ["--s3-provider", provider_name]
+        if cfg is None:
+            return args
+        if cfg.s3_provider:
+            args += ["--s3-provider", cfg.s3_provider]
+        if cfg.s3_region:
+            args += ["--s3-region", cfg.s3_region]
+        if cfg.s3_endpoint:
+            args += ["--s3-endpoint", cfg.s3_endpoint]
+        # Credentials from .backup override whatever rclone has stored, so a
+        # remote can be used without touching the rclone config at all.
+        if cfg.s3_access_key_id and cfg.s3_secret_access_key:
+            args += [
+                "--s3-access-key-id", cfg.s3_access_key_id,
+                "--s3-secret-access-key", cfg.s3_secret_access_key,
+            ]
         return args
     return []
 
@@ -170,6 +177,31 @@ def list_remotes() -> list[str]:
     return [line.split(":", 1)[0] for line in out.splitlines() if line.strip()]
 
 
+def default_remote(cfg: Config) -> str | None:
+    """
+    Remote to use when the caller does not pass one.
+    
+    Generic remote (REMOTE) takes precedence, followed by S3 settings.
+    """
+    if cfg.remote:
+        return cfg.remote
+    
+    # If a named remote is configured (S3_REMOTE), use it as the prefix
+    prefix = cfg.s3_remote if cfg.s3_remote else "s3"
+    
+    if cfg.s3_bucket:
+        target = f"{prefix}:{cfg.s3_bucket}"
+        if cfg.s3_prefix:
+            target += f"/{cfg.s3_prefix.strip('/')}"
+        return target
+        
+    if cfg.s3_remote:
+        # A named remote (created by init) may carry its own bucket/path.
+        return f"{cfg.s3_remote}:"
+        
+    return None
+
+
 def _collect_files(base_dir: Path, patterns: list[str]) -> list[Path]:
     """Return all files under base_dir matching any of the glob patterns."""
     seen: set[Path] = set()
@@ -189,15 +221,10 @@ def _upload(base_dir: Path, remote_path: str, transfer_args: list[str], count: i
     Raises StorageError on failure so the caller never deletes local files after
     a failed transfer.
     """
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("{task.description}", table_column=Column(min_width=48)),
-        TimeElapsedColumn(),
-        console=console,
-    ) as progress:
-        task = progress.add_task(f"[cyan]Uploading {count} file(s) → {remote_path}[/]", total=None)
+    if json_enabled():
+        # In JSON mode, we must capture output to prevent corrupting the stdout payload.
         try:
-            result = subprocess.run(  # noqa: S603 — list form, fixed binary, no shell
+            result = subprocess.run(
                 ["rclone", "copy", str(base_dir) + "/", remote_path, *transfer_args],
                 capture_output=True,
                 check=False,
@@ -208,7 +235,23 @@ def _upload(base_dir: Path, remote_path: str, transfer_args: list[str], count: i
         if result.returncode != 0:
             err = result.stderr.decode(errors="replace").strip()
             raise StorageError(err.splitlines()[-1] if err else f"rclone exited {result.returncode}")
-        progress.update(task, description=f"[green]✓ Uploaded {count} file(s)[/]", total=1, completed=1)
+        return
+
+    # Non-JSON mode: let rclone stream its native high-performance progress bar to the console.
+    console.print(f"[cyan]Uploading {count} file(s) → {remote_path}[/]")
+    try:
+        result = subprocess.run(
+            ["rclone", "copy", str(base_dir) + "/", remote_path, *transfer_args, "--progress"],
+            stdout=sys.stdout,
+            stderr=subprocess.PIPE,
+            check=False,
+            env=rclone_env(),
+        )
+    except FileNotFoundError as exc:
+        raise StorageError("rclone not found in PATH") from exc
+    if result.returncode != 0:
+        err = result.stderr.decode(errors="replace").strip()
+        raise StorageError(err.splitlines()[-1] if err else f"rclone exited with code {result.returncode}")
 
     console.print("[green]Upload complete.[/]")
 
@@ -222,6 +265,12 @@ def run_sync(
         include_patterns: list[str] | None = None,
         delete_local: bool = True,
         show_remotes: bool = False,
+        transfers: int | None = None,
+        checkers: int | None = None,
+        since: int | None = None,
+        until: int | None = None,
+        schemas: list[str] = [],
+        interactive: bool = True,
 ) -> int:
     """Sync backups to any rclone remote, then prune old files there."""
     if show_remotes:
@@ -239,21 +288,74 @@ def run_sync(
     if not rclone_available():
         _die("rclone not found in PATH. Install it from https://rclone.org/install/")
 
-    spec = remote or cfg.gdrive_remote or f"gdrive:{cfg.gdrive_remote}"
+    spec = remote or default_remote(cfg)
+    if not spec:
+        _die("No remote configured. Pass --remote or configure S3/rclone in .backup.")
     try:
         target = parse_remote(spec)
     except ValueError as exc:
         _die(str(exc))
 
-    days = age_days if age_days is not None else cfg.gdrive_age_days
-    patterns = include_patterns or cfg.gdrive_include
-    base_dir = Path(cfg.base_dir)
+    days = age_days if age_days is not None else 2
+    patterns = include_patterns or ["*"]
     remote_path = target.target if target.path else target.provider + ":"
 
-    if not base_dir.is_dir():
-        _die(f"Backup directory not found: {base_dir}")
+    # 1. Resolve base directory and interactive selections
+    if interactive:
+        if not json_enabled():
+            from . import prompt as q
+            base_dir = Path(cfg.base_dir).resolve()
+            if not base_dir.is_dir():
+                # Fallback to local db-backup if the configured one is missing
+                local_fallback = Path.cwd() / "db-backup"
+                if local_fallback.is_dir():
+                    base_dir = local_fallback
+                else:
+                    _die(f"Backup root directory not found: {base_dir}")
 
-    title = "Google Drive Sync" if target.provider == "gdrive" else "Off-site Sync"
+            db_dirs = sorted([d for d in base_dir.iterdir() if d.is_dir() and not d.is_symlink()])
+            if not db_dirs:
+                _die(f"No backup folders found in {base_dir}")
+            
+            table = Table(show_header=True, header_style="bold")
+            table.add_column("#", style="dim", width=4)
+            table.add_column("Folder", min_width=24)
+            table.add_column("Backups", justify="right")
+            for i, d in enumerate(db_dirs):
+                count = sum(len(list(d.rglob(pat))) for pat in ["*.dump", "*.dump.gz", "*.sql", "*.sql.gz", "*.zip", "*.bak"])
+                table.add_row(str(i), d.name, str(count))
+            console.print(table)
+
+            selected = q.checkbox(
+                "Select folders to sync (Space to toggle, Enter to confirm, none = all)",
+                choices=[q.Choice(db.name, value=db.name) for db in db_dirs],
+            ).ask()
+            if selected:
+                schemas = selected
+
+            if since is None or until is None:
+                val = q.text("Date range in days (since, until) [e.g. '30, 0' for last 30 days, blank for all]", 
+                             default=f"{since or ''}, {until or ''}").ask()
+                if val:
+                    parts = [p.strip() for p in val.split(",")]
+                    if len(parts) >= 1 and parts[0].isdigit():
+                        since = int(parts[0])
+                    if len(parts) >= 2 and parts[1].isdigit():
+                        until = int(parts[1])
+        else:
+            base_dir = Path(cfg.base_dir).resolve()
+    else:
+        base_dir = Path(cfg.base_dir).resolve()
+
+    if not base_dir.is_dir():
+        # Fallback for non-interactive mode too
+        local_fallback = Path.cwd() / "db-backup"
+        if local_fallback.is_dir():
+            base_dir = local_fallback
+        else:
+            _die(f"Backup root directory not found: {base_dir}")
+
+    title = "Off-site Sync"
     if not json_enabled():
         console.print()
         console.print(Panel(
@@ -268,6 +370,18 @@ def run_sync(
 
     _section("Files to sync")
     files = _collect_files(base_dir, patterns)
+
+    import time
+    now = time.time()
+    if since is not None:
+        cutoff = now - (since * 86400)
+        files = [f for f in files if f.stat().st_mtime >= cutoff]
+    if until is not None:
+        cutoff = now - (until * 86400)
+        files = [f for f in files if f.stat().st_mtime <= cutoff]
+
+    if schemas:
+        files = [f for f in files if any(s in f.parts for s in schemas)]
 
     if not files:
         message = f"No files matching patterns in {base_dir}. Nothing to do."
@@ -290,8 +404,21 @@ def run_sync(
         console.print(f"  Total: [bold]{len(files)}[/] file(s)")
 
     transfer_args = list(TRANSFER_ARGS) + provider_args(target.provider, cfg)
+    if transfers is not None:
+        for i, arg in enumerate(transfer_args):
+            if arg == "--transfers":
+                transfer_args[i+1] = str(transfers)
+    if checkers is not None:
+        for i, arg in enumerate(transfer_args):
+            if arg == "--checkers":
+                transfer_args[i+1] = str(checkers)
+
     for pat in patterns:
         transfer_args += ["--include", pat]
+    
+    if schemas:
+        for s in schemas:
+            transfer_args += ["--include", f"{s}/**"]
 
     _section("Uploading")
 
@@ -325,18 +452,19 @@ def run_sync(
             "--min-age", f"{days}d",
             "--include", pat,
             "--tpslimit", "10",
-            "--transfers", "2",
         ]
+        p_transfers = str(transfers) if transfers is not None else "2"
+        p_checkers = str(checkers) if checkers is not None else "4"
+        prune_args += ["--transfers", p_transfers, "--checkers", p_checkers]
         if dry_run:
             prune_args.append("--dry-run")
         console.print(f"  [dim]Pruning pattern: {pat}[/]")
-        # delete() is non-fatal per pattern — missing matches are not errors
         try:
             code, _out, err = _run_rclone(["delete", remote_path, *prune_args], timeout=1800)
             if code != 0:
                 raise RuntimeError(err.strip().splitlines()[-1] if err.strip() else f"exit {code}")
             pruned.append(pat)
-        except Exception as exc:  # noqa: BLE001 — one bad pattern must not abort the rest
+        except Exception as exc:
             prune_errors.append(f"{pat}: {exc}")
             console.print(f"  [yellow]Warning: prune failed for '{pat}': {exc}[/]")
 

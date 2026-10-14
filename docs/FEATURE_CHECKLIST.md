@@ -12,7 +12,7 @@ Use this as the execution tracker. Items are ordered from highest to lowest reco
 - [x] Progress bars for backup and restore
 - [x] Interactive database and schema drop (`drop` command)
 - [x] n8n Docker volume backup and restore
-- [x] Google Drive sync via rclone (`gdrive-sync`)
+- [x] Off-site sync via rclone (`sync`)
 - [x] MariaDB → PostgreSQL migration (`migrate` command)
   - [x] Schema extraction via `information_schema`
   - [x] DDL transformation (15+ rewrite rules)
