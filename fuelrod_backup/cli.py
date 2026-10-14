@@ -205,6 +205,13 @@ def restore(
             bool,
             typer.Option("--yes", "-y", help="Execute without the final confirmation (non-interactive)."),
         ] = False,
+        chain: Annotated[
+            bool,
+            typer.Option(
+                "--incremental-chain",
+                help="After restoring the chosen base dump, apply every newer _inc dump in order.",
+            ),
+        ] = False,
         all_engines: Annotated[
             bool,
             typer.Option(
@@ -270,6 +277,7 @@ def restore(
                 no_owner=no_owner,
                 dry_run=dry_run,
                 yes=yes,
+                incremental_chain=chain,
             )
         return
 
@@ -286,6 +294,7 @@ def restore(
         no_owner=no_owner,
         dry_run=dry_run,
         yes=yes,
+        incremental_chain=chain,
     )
 
 

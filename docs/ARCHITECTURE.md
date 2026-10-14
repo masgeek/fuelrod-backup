@@ -46,6 +46,17 @@ Each adapter declares capability flags that control which restore and drop optio
 
 Multi-engine mode (`--all-engines`) runs each engine in parallel via `ThreadPoolExecutor`.
 
+### Incremental PostgreSQL dumps
+
+`INCREMENTAL=true` enables a logical increment strategy behind the `supports_incremental` capability
+flag. `PgRunner.table_change_signature()` returns `{table: n_tup_ins + n_tup_upd + n_tup_del}` from
+`pg_stat_user_tables`; `backup.changed_tables()` diffs it against `.incremental_state.json` in the
+database directory. No state (or a vanished base) means a full dump plus a new sidecar. Changes
+produce `<db>_<ts>_inc.dump` via `backup_tables()` (`pg_dump -t`), applied on top of the base with
+`pg_restore`. The counter only moves within a stats epoch, so a stats reset degrades to a larger
+dump — never to a missing one. `prune_incremental()` rotates `_inc` files; the base is protected
+from age-based retention via `_protected_bases()`.
+
 ## Restore Flow
 
 1. Validate config and connection.

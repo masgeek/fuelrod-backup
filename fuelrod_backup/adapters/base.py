@@ -14,6 +14,7 @@ class DbAdapter(ABC):
       supports_schemas  – engine has named schemas inside a database (PG, MSSQL)
       supports_roles    – engine has role/ownership semantics readable from dump (PG)
       supports_toc      – engine can read a table-of-contents from the dump (PG)
+      supports_incremental – engine can dump only the tables that changed (PG)
       dump_extension    – default file extension for dump files
     """
 
@@ -22,6 +23,7 @@ class DbAdapter(ABC):
     supports_toc: bool = False
     supports_schema_drop: bool = False
     supports_schema_create: bool = False
+    supports_incremental: bool = False
     dump_extension: str = ".dump"
 
     # ──────────────────────────────────────────────────────────────
@@ -46,6 +48,19 @@ class DbAdapter(ABC):
         exclude_schemas: list[str],
     ) -> None:
         """Dump *dbname* to *out_file*."""
+
+    def table_change_signature(self, dbname: str) -> dict[str, int]:
+        """Return {table: change_counter} for *dbname* (empty if unsupported)."""
+        return {}
+
+    def backup_tables(
+        self,
+        dbname: str,
+        out_file: Path,
+        tables: list[str],
+    ) -> None:
+        """Dump only *tables* (and their data) into *out_file*."""
+        raise NotImplementedError(f"{type(self).__name__} does not support incremental dumps")
 
     @abstractmethod
     def restore_db(

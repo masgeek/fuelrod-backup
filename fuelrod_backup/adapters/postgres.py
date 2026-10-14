@@ -15,6 +15,7 @@ class PostgresAdapter(DbAdapter):
     supports_toc: bool = True
     supports_schema_drop: bool = True
     supports_schema_create: bool = True
+    supports_incremental: bool = True
     dump_extension: str = ".dump"
 
     def __init__(self, cfg: Config) -> None:
@@ -56,6 +57,47 @@ class PostgresAdapter(DbAdapter):
 
         with out_file.open("wb") as f_out:
             self._runner.pg_dump(*base_args, stdout=f_out.fileno())
+
+    def table_change_signature(self, dbname: str) -> dict[str, int]:
+        """
+        Per-table change counter from pg_stat_user_tables.
+
+        The counter is the cumulative (inserts + updates + deletes) since the
+        last stats reset, so it only ever moves forward within a stats epoch.
+        After a stats reset every table looks changed, which degrades to a full
+        dump — safe, never wrong.
+        """
+        return self._runner.table_change_signature(dbname)
+
+    def backup_tables(
+        self,
+        dbname: str,
+        out_file: Path,
+        tables: list[str],
+    ) -> None:
+        """
+        Dump only *tables* (schema + data) into *out_file*.
+
+        Each table is passed with -t so the dump is self-contained for those
+        tables. DDL-only changes to *other* objects are NOT captured — an
+        incremental dump is additive on top of its base, never a replacement.
+        """
+        if not tables:
+            raise ValueError("backup_tables requires at least one table")
+
+        args = [
+            "-U", self._cfg.user,
+            "-h", self._cfg.host,
+            "-p", str(self._cfg.port),
+            "-F", "c",
+            "-b",
+            dbname,
+        ]
+        for table in tables:
+            args += ["-t", table]
+
+        with out_file.open("wb") as f_out:
+            self._runner.pg_dump(*args, stdout=f_out.fileno())
 
     def restore_db(
         self,

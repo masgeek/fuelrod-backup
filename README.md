@@ -130,6 +130,7 @@ The wizard navigates the backup directory in four steps:
 - `--schema TEXT` — repeatable; restore only these schemas
 - `--no-owner` — restore with `--no-owner --no-privileges`
 - `--dry-run` — print the plan and exit without changing anything
+- `--incremental-chain` — after restoring the chosen base, apply every newer `_inc` dump in order
 - `--yes, -y` — required to actually execute a non-interactive restore
 - `--all-engines, -a` — restore all engines sequentially (multi-engine config)
 - `--docker / --no-docker`
@@ -181,6 +182,24 @@ external tool report `skip`, not failure.
 By default `.sql.gz`/`.zip` archives are only probed at the header level — a full decompress of
 every archive in a real backup tree (thousands of multi-GB files) is a `--deep` job. Artifacts are
 checked in parallel with a progress bar.
+
+### Incremental PostgreSQL backups
+
+Set `INCREMENTAL=true` (PostgreSQL only) and the first backup of each database writes a full dump
+plus a `.incremental_state.json` sidecar holding a per-table change counter. Later runs dump only
+the tables whose counter moved, into `<db>_<timestamp>_inc.dump`; if nothing changed, no file is
+written at all. Restoring requires base first, then the increments:
+
+```bash
+fuelrod-backup restore -n -p fuelrod -d app --file app_20260101_000000.dump     --incremental-chain --target-db app --yes
+```
+
+- The base of a chain is never pruned by `KEEP_DAYS`; only `_inc` files rotate, keeping the newest
+  `INCREMENTAL_KEEP`.
+- Change detection is DML-based (`pg_stat_user_tables` insert/update/delete counters). DDL-only
+  changes to objects outside those tables are not captured — an increment is additive on top of
+  its base, never a replacement. After a PostgreSQL stats reset every table looks changed, so the
+  run degrades to a near-full dump rather than missing data.
 
 ### `drop`
 
@@ -295,6 +314,8 @@ DB_PORT=
 | `SERVICE` | container name (Docker mode) |
 | `BASE_DIR` | backup root directory |
 | `COMPRESS_FILE` | `true`/`false` — gzip output |
+| `INCREMENTAL` | `true`/`false` — dump only changed tables (PostgreSQL only) |
+| `INCREMENTAL_KEEP` | number of `_inc` dumps to keep alongside the base (default 5) |
 | `KEEP_DAYS` | retention days (`0` = keep forever) |
 | `CONNECTION_TIMEOUT` | connection timeout in seconds |
 

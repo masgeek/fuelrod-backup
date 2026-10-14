@@ -677,8 +677,14 @@ def _perform_restore(
         table_args: list[str],
         role_args: list[str],
         jobs: int,
+        extra_files: list[Path] | None = None,
 ) -> None:
-    """Run the engine-specific restore and print the post-restore report."""
+    """
+    Run the engine-specific restore and print the post-restore report.
+
+    *extra_files* are applied after the main dump, oldest first — used to layer
+    an incremental chain on top of its base.
+    """
     console.print()
     console.print(f"  Restoring [bold]{backup_file.name}[/] → [bold]{target_db}[/]")
 
@@ -700,6 +706,13 @@ def _perform_restore(
                 restore_args += role_args
                 if jobs > 1:
                     restore_args += ["-j", str(jobs)]
+
+                # Increments are additive on top of the base, so they carry
+                # only the narrowing options — never --clean/--if-exists,
+                # which would wipe what the base just restored.
+                incremental_args = list(schema_args) + list(role_args)
+                if jobs > 1:
+                    incremental_args += ["-j", str(jobs)]
 
                 schemas_to_ensure = selected_schemas or _parse_schemas_from_toc(toc)
                 if schemas_to_ensure:
@@ -725,6 +738,13 @@ def _perform_restore(
                         adapter.remap_schema(src, dst, target_db)
                     except Exception as exc:  # noqa: BLE001
                         console.print(f"  [yellow]WARN:[/] remap {src} → {dst} failed: {exc}")
+
+            for i, extra in enumerate(extra_files or [], 1):
+                progress.update(
+                    task,
+                    description=f"[cyan]Applying increment {i}/{len(extra_files)} ({extra.name})…[/]",
+                )
+                _execute_pg_restore_v2(extra, target_db, incremental_args, cfg)
 
             progress.update(task, description=f"[green]✓ Restore complete → {target_db}[/]", total=1, completed=1)
 
@@ -770,6 +790,7 @@ def run_restore(
     no_owner: bool = False,
     dry_run: bool = False,
     yes: bool = False,
+    incremental_chain: bool = False,
 ) -> None:
     """Restore a database from a dump file.
 
@@ -789,6 +810,7 @@ def run_restore(
             no_owner=no_owner,
             dry_run=dry_run,
             yes=yes,
+            incremental_chain=incremental_chain,
         )
         return
 
@@ -816,6 +838,9 @@ def run_restore(
 
     # Step 4 — Select backup file from that folder only
     backup_file = _step_select_file(db_dir, database)
+
+    if incremental_chain:
+        _die("--incremental-chain requires --no-interactive (the base file must be explicit).")
 
     # ── PostgreSQL-specific: TOC, schema, role, scope analysis ─────
     toc = ""
@@ -932,6 +957,7 @@ def run_restore(
         table_args=table_args,
         role_args=role_args,
         jobs=jobs,
+        extra_files=_resolve_chain(backup_file, incremental_chain, adapter),
     )
 
 
@@ -959,6 +985,7 @@ def run_restore_noninteractive(
     no_owner: bool,
     dry_run: bool,
     yes: bool,
+    incremental_chain: bool = False,
 ) -> None:
     """Restore without any prompt; every decision comes from the caller."""
     adapter = get_adapter(cfg)
@@ -1046,6 +1073,8 @@ def run_restore_noninteractive(
         console.print(f"  Scope       : {scope}")
         console.print(f"  Drop first  : {'yes' if clean_args else 'no'}")
         console.print(f"  No-owner    : {'yes' if no_owner else 'no'}")
+    chain = _resolve_chain(backup_file, incremental_chain, adapter)
+    console.print(f"  Increments : {len(chain) if chain else 'none'}")
     console.print(f"  Drop target : {'yes' if _target_exists(adapter, target_db) else 'no (will be created)'}")
     console.print()
 
@@ -1083,7 +1112,24 @@ def run_restore_noninteractive(
         table_args=table_args,
         role_args=role_args,
         jobs=jobs,
+        extra_files=chain,
     )
+
+
+def _resolve_chain(backup_file: Path, wanted: bool, adapter: DbAdapter) -> list[Path]:
+    """Incremental dumps to layer on top of *backup_file*, oldest first."""
+    if not wanted:
+        return []
+    if not adapter.supports_incremental:
+        _die(f"{adapter.__class__.__name__} has no incremental backups — dropping the flag.")
+    from .backup import incremental_chain
+
+    chain = incremental_chain(backup_file.parent, backup_file)
+    if not chain:
+        console.print("  [dim]No incremental dumps newer than this base — restoring the base only.[/]")
+    else:
+        console.print(f"  [cyan]Chain:[/] {backup_file.name} + {len(chain)} increment(s)")
+    return chain
 
 
 def _target_exists(adapter: DbAdapter, target: str) -> bool:

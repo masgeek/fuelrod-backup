@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gzip
+import json
 import re
 import shutil
 import subprocess
@@ -41,6 +42,106 @@ def _die(msg: str) -> None:
 
 
 _SAFE_PATH_RE = re.compile(r"^[A-Za-z0-9_\- ]+$")
+
+# Sidecar written next to the dumps of a database when INCREMENTAL is enabled.
+_STATE_FILE = ".incremental_state.json"
+
+# Suffix marking a partial dump that only holds tables changed since the base.
+_INCREMENT_SUFFIX = "_inc"
+
+
+def _load_incremental_state(db_dir: Path) -> dict | None:
+    """Read the incremental state sidecar, or None when absent/unreadable."""
+    path = db_dir / _STATE_FILE
+    if not path.is_file():
+        return None
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(state, dict) or "signature" not in state:
+        return None
+    # The recorded base must still exist, otherwise fall back to a full dump.
+    base = state.get("base")
+    if base and not (db_dir / base).is_file():
+        return None
+    return state
+
+
+def _save_incremental_state(db_dir: Path, state: dict) -> None:
+    (db_dir / _STATE_FILE).write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+
+def changed_tables(previous: dict[str, int], current: dict[str, int]) -> list[str]:
+    """
+    Tables whose change counter moved, plus tables that appeared or vanished.
+
+    A vanished table is deliberately excluded from the incremental dump: there
+    is nothing to dump, and its rows stay in the base backup.
+    """
+    changed = [t for t, count in current.items() if previous.get(t) != count]
+    return sorted(changed)
+
+
+def prune_incremental(db_dir: Path, keep: int) -> list[Path]:
+    """
+    Delete all but the newest *keep* incremental dumps.
+
+    The base dump is never removed here — an incremental dump is meaningless
+    without it — so age-based retention must not be the only thing pruning
+    this directory. Returns the removed paths.
+    """
+    increments = sorted(db_dir.glob(f"*_*{_INCREMENT_SUFFIX}.dump*"))
+    removed: list[Path] = []
+    for path in increments[:-keep] if keep > 0 else increments:
+        try:
+            path.unlink()
+        except OSError:
+            continue
+        removed.append(path)
+    return removed
+
+
+def _protected_bases(backup_dir: Path) -> set[str]:
+    """File names of every incremental chain base that must not be pruned."""
+    protected: set[str] = set()
+    if not backup_dir.is_dir():
+        return protected
+    for state_path in backup_dir.rglob(_STATE_FILE):
+        state = _load_incremental_state(state_path.parent)
+        base = state.get("base") if state else None
+        if base:
+            protected.add(base)
+    return protected
+
+
+def incremental_chain(db_dir: Path, base_file: Path) -> list[Path]:
+    """
+    Incremental dumps that belong on top of *base_file*, oldest first.
+
+    Only dumps newer than the base are applied, so restoring an old base plus
+    everything after it reproduces the state at the newest dump.
+    """
+    candidates = sorted(
+        p for p in db_dir.glob(f"*{_INCREMENT_SUFFIX}.dump*")
+        if p.name != base_file.name and p.stat().st_mtime > base_file.stat().st_mtime
+    )
+    return candidates
+
+
+def _unique_dump_path(db_dir: Path, stem: str, ext: str) -> Path:
+    """
+    Pick a free dump path for *stem*+*ext*.
+
+    Two backups within the same second would otherwise collide and the second
+    would silently overwrite the first.
+    """
+    candidate = db_dir / f"{stem}{ext}"
+    counter = 1
+    while candidate.exists():
+        candidate = db_dir / f"{stem}_{counter}{ext}"
+        counter += 1
+    return candidate
 
 
 def _validate_path_component(name: str, label: str = "name") -> str:
@@ -156,8 +257,13 @@ def _backup_one(
         *,
         progress=None,
         task_id=None,
-) -> Path:
-    """Dump a single database. Returns the final dump file path."""
+) -> Path | None:
+    """
+    Dump a single database. Returns the final dump file path.
+
+    Returns None when an incremental backup found nothing to dump, so an
+    unchanged database costs nothing.
+    """
 
     def _phase(desc: str) -> None:
         if task_id is not None:
@@ -172,10 +278,28 @@ def _backup_one(
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     ext = adapter.dump_extension
-    dump_file = db_dir / f"{db}_{timestamp}{ext}"
+
+    incremental = cfg.incremental and adapter.supports_incremental
+    state = _load_incremental_state(db_dir) if incremental else None
+    tables: list[str] | None = None
+    base_name: str | None = None
+
+    if state is not None:
+        current = adapter.table_change_signature(db)
+        tables = changed_tables(state["signature"], current)
+        base_name = state.get("base")
+        if not tables:
+            _phase(f"[dim]{db}[/]  [dim]no changes[/]")
+            if task_id is None:
+                console.print(f"  [dim]-[/] {db} [dim]— no table changes since the last backup[/]")
+            return None
+
+    suffix = f"{_INCREMENT_SUFFIX}{ext}" if tables is not None else ext
+    dump_file = _unique_dump_path(db_dir, f"{db}_{timestamp}", suffix)
     manifest_file = db_dir / f"manifest_{timestamp}.txt"
 
     # Write manifest
+    mode = "incremental" if tables is not None else "full"
     with manifest_file.open("w") as mf:
         mf.write(f"Database  : {db}\n")
         mf.write(f"Engine    : {cfg.db_type.value}\n")
@@ -184,14 +308,26 @@ def _backup_one(
         mf.write(f"User      : {cfg.user}\n")
         mf.write(f"Docker    : {cfg.use_docker}\n")
         mf.write(f"Compressed: {cfg.compress}\n")
+        mf.write(f"Mode      : {mode}\n")
+        if base_name:
+            mf.write(f"Base      : {base_name}\n")
+            mf.write(f"Tables    : {len(tables)} changed\n")
+            for t in tables:
+                mf.write(f"  - {t}\n")
 
-    _phase(f"[cyan]{db}[/]  dumping…")
-    adapter.backup_db(
-        db,
-        dump_file,
-        include_schemas=[],
-        exclude_schemas=[],
-    )
+    saved_tables: list[str] | None = None
+    if tables is not None:
+        _phase(f"[cyan]{db}[/]  dumping {len(tables)} changed table(s)…")
+        adapter.backup_tables(db, dump_file, tables)
+        saved_tables = tables
+    else:
+        _phase(f"[cyan]{db}[/]  dumping…")
+        adapter.backup_db(
+            db,
+            dump_file,
+            include_schemas=[],
+            exclude_schemas=[],
+        )
 
     if cfg.compress and dump_file.suffix != ".bak":
         _phase(f"[cyan]{db}[/]  compressing…")
@@ -200,6 +336,19 @@ def _backup_one(
             shutil.copyfileobj(f_in, f_out)
         dump_file.unlink()
         dump_file = gz_file
+
+    # State is written after compression so `base` points at the file that
+    # actually survives on disk.
+    if incremental:
+        signature = adapter.table_change_signature(db)
+        if signature:
+            _save_incremental_state(db_dir, {
+                "base": base_name if saved_tables is not None else dump_file.name,
+                "timestamp": timestamp,
+                "tables": saved_tables or [],
+                "signature": signature,
+            })
+            prune_incremental(db_dir, cfg.incremental_keep)
 
     size = dump_file.stat().st_size
     human = f"{size / 1024 / 1024:.1f} MB" if size > 1024 * 1024 else f"{size / 1024:.1f} KB"
@@ -216,14 +365,23 @@ def _backup_one(
 #  Cleanup old backups
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _cleanup_old(base_dir: str, days: int) -> None:
+def _cleanup_old(base_dir: str, days: int, protect: set[str] | None = None) -> None:
+    """
+    Delete dumps older than *days*.
+
+    *protect* holds file names that must survive regardless of age — the base
+    of an incremental chain, whose increments are meaningless without it.
+    """
     if days <= 0:
         return
     import time
+    keep = protect or set()
     cutoff = time.time() - days * 86400
     base = Path(base_dir)
     for pattern in ("**/*.dump", "**/*.dump.gz", "**/*.sql", "**/*.sql.gz", "**/*.bak", "**/manifest_*.txt"):
         for f in base.glob(pattern):
+            if f.name in keep:
+                continue
             if f.stat().st_mtime < cutoff:
                 f.unlink()
                 console.print(f"  [dim]Removed old backup: {f.name}[/]")
@@ -323,9 +481,9 @@ def run_backup(
                 dump_file = _backup_one(db, cfg, adapter, progress=progress, task_id=task_id)
                 dumped.append({
                     "database": db,
-                    "file": str(dump_file),
-                    "size": dump_file.stat().st_size,
-                    "status": "ok",
+                    "file": str(dump_file) if dump_file else None,
+                    "size": dump_file.stat().st_size if dump_file else 0,
+                    "status": "ok" if dump_file else "unchanged",
                 })
             except subprocess.CalledProcessError as exc:
                 progress.update(task_id, description=f"[red]✗ {db}[/]", completed=1)
@@ -337,7 +495,7 @@ def run_backup(
                 _die(f"Backup failed for '{db}': {exc}")
             progress.update(overall, advance=1, description=f"[bold cyan]{i}/{n} databases[/]")
 
-    _cleanup_old(str(cfg.backup_dir), cfg.days_to_keep)
+    _cleanup_old(str(cfg.backup_dir), cfg.days_to_keep, protect=_protected_bases(Path(cfg.backup_dir)))
 
     if json_enabled():
         emit({

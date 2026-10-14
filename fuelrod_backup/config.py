@@ -38,6 +38,10 @@ class Config:
     base_dir: str = ""  # backup root directory (raw root)
     compress: bool = False
     days_to_keep: int = 7
+    # Incremental (PostgreSQL only) — dump only tables that changed since the
+    # last full dump; the base dump is kept until it is superseded.
+    incremental: bool = False
+    incremental_keep: int = 5
     connection_timeout: int = 30  # seconds; applies to driver connect + docker subprocess checks
     # n8n volume backup
     n8n_services: list[str] = field(default_factory=lambda: ["n8n"])
@@ -257,6 +261,12 @@ def load_config(config_file: Path | None = None, db_type_override: str | None = 
     except ValueError:
         cfg.days_to_keep = 7
 
+    cfg.incremental = _get("INCREMENTAL", "false").strip().lower() in ("true", "1", "yes")
+    try:
+        cfg.incremental_keep = int(_get("INCREMENTAL_KEEP", "5"))
+    except ValueError:
+        cfg.incremental_keep = 5
+
     # n8n volume backup
     raw_n8n = _get("N8N_SERVICES", "n8n").strip()
     cfg.n8n_services = [s.strip() for s in raw_n8n.split() if s.strip()]
@@ -308,6 +318,11 @@ def _load_prefixed_config(
         cfg.days_to_keep = int(_get("KEEP_DAYS", "7"))
     except ValueError:
         cfg.days_to_keep = 7
+    cfg.incremental = _get("INCREMENTAL", "false").strip().lower() in ("true", "1", "yes")
+    try:
+        cfg.incremental_keep = int(_get("INCREMENTAL_KEEP", "5"))
+    except ValueError:
+        cfg.incremental_keep = 5
     try:
         cfg.connection_timeout = int(_get("CONNECTION_TIMEOUT", "30"))
     except ValueError:
