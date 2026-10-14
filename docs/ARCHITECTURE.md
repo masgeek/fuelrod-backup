@@ -10,6 +10,7 @@
 | `backup.py` | Backup wizard, execution, retention cleanup |
 | `restore.py` | Restore wizard, TOC parsing, engine-specific restore |
 | `verify.py` | Offline integrity checks for backup artifacts |
+| `doctor.py` | Pre-flight diagnostics for config, tools, disk and connectivity |
 | `runner.py` | PostgreSQL native + subprocess operations (psycopg3) |
 | `drop.py` | Interactive database/schema drop |
 | `n8n_backup.py` | Hot Docker volume snapshots for n8n |
@@ -111,6 +112,14 @@ Key migration behaviours:
 - Foreign keys appended with `DEFERRABLE INITIALLY DEFERRED`
 - Tables with > 1 million rows bypass the thread pool and run sequentially
 - Skipped rows written to `<db>_skipped_rows.jsonl`
+
+## Doctor Flow
+
+`doctor.py` runs independent checks and reports `ok` / `warn` / `fail` / `skip` for each, with a
+remediation hint attached to anything not `ok`. It checks the runtime, config discovery,
+credentials, `BASE_DIR` writability and free disk, retention sanity, per-engine host binaries,
+Docker plus service state, a live connection, the `rclone` remote and the n8n service list. Only
+`fail` produces a non-zero exit code, so `doctor` can gate a job without warning noise blocking it.
 
 ## Verify Flow
 

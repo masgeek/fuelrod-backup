@@ -12,6 +12,7 @@ Interactive backup and restore CLI for PostgreSQL, MariaDB/MySQL, and Microsoft 
 - Backup retention cleanup (`KEEP_DAYS`)
 - Interactive database/schema drop, plus disconnect-without-drop (`drop`)
 - Backup integrity verification (`verify`)
+- Pre-flight diagnostics (`doctor`)
 - n8n Docker volume snapshots with no container downtime
 - Google Drive sync via rclone (`gdrive-sync`)
 - MariaDB → PostgreSQL migration with schema transformation, data migration, and post-migration validation (`migrate`)
@@ -72,6 +73,7 @@ fuelrod-backup backup     [OPTIONS]
 fuelrod-backup restore    [OPTIONS]
 fuelrod-backup drop       [OPTIONS]
 fuelrod-backup verify    [OPTIONS]
+fuelrod-backup doctor    [OPTIONS]
 fuelrod-backup migrate    [OPTIONS]
 fuelrod-backup n8n-backup  [OPTIONS]
 fuelrod-backup n8n-restore [OPTIONS]
@@ -143,6 +145,18 @@ fuelrod-backup restore -n -p fuelrod -d app --target-db app_restored --dry-run
 # Run it unattended (cron/CI)
 fuelrod-backup restore -n -p fuelrod -d app --target-db app_restored --yes
 ```
+
+### `doctor`
+
+Run pre-flight checks and report everything that is not ready yet.
+
+- `--skip-connection` — skip the live database connection test
+- `--config, -c PATH`
+
+Checks the Python runtime, config file discovery, credentials, `BASE_DIR` existence/writability and
+free disk space, retention settings, required external binaries (`pg_dump`, `pg_restore`,
+`mariadb-dump`, `mysql`), Docker and service state, the database connection, and the `rclone`
+remote plus n8n service list. Each failure prints a hint with the fix. Exits non-zero on failure.
 
 ### `verify`
 

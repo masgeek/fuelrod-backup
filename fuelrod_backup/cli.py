@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from typing import Annotated
@@ -28,6 +29,24 @@ app = typer.Typer(
 )
 
 
+def _force_utf8_output() -> None:
+    """
+    Make stdout/stderr UTF-8 tolerant before anything prints.
+
+    Windows consoles still default to a legacy code page (cp1252), where Rich's
+    box-drawing and status glyphs (✓, ✗, ─) raise UnicodeEncodeError mid-render.
+    Reconfiguring to utf-8 with errors="replace" makes degraded output
+    possible instead of a traceback.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except (ValueError, OSError):  # already-detached or non-reconfigurable stream
+                pass
+
+
 @app.callback()
 def _main(
     version: Annotated[
@@ -35,7 +54,7 @@ def _main(
         typer.Option("--version", "-V", callback=_version_callback, is_eager=True, help="Show version and exit."),
     ] = False,
 ) -> None:
-    pass
+    _force_utf8_output()
 console = Console()
 
 # Reusable option definitions
@@ -245,6 +264,29 @@ def restore(
         dry_run=dry_run,
         yes=yes,
     )
+
+
+@app.command("doctor")
+def doctor(
+        skip_connection: Annotated[
+            bool,
+            typer.Option("--skip-connection", help="Skip the live database connection test."),
+        ] = False,
+        config_file: Annotated[Path | None, _CONFIG_OPT] = None,
+) -> None:
+    """Run pre-flight checks and report everything that is not ready.
+
+    Verifies the config file, credentials, BASE_DIR writability and free disk
+    space, required external binaries (pg_dump, mariadb-dump, ...), Docker and
+    the service state, the database connection, and rclone/n8n configuration.
+    Exits non-zero if any check fails.
+    """
+    from .doctor import run_doctor
+
+    cfg = load_config(config_file)
+    code = run_doctor(cfg, skip_connection=skip_connection)
+    if code:
+        raise typer.Exit(code=code)
 
 
 @app.command("verify")
