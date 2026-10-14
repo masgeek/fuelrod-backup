@@ -116,10 +116,31 @@ The wizard navigates the backup directory in four steps:
 3. **Database** — pick the database folder within the engine directory
 4. **Backup file** — pick from files in that database folder only
 
+- `--no-interactive, -n` — skip the wizard; requires `--project` and `--db`
+- `--project, -p TEXT` — project/group folder under `BASE_DIR`
+- `--db, -d TEXT` — repeatable; database(s) to restore
+- `--file, -f TEXT` — backup file name inside the database folder (default: latest by mtime)
+- `--target-db TEXT` — restore into a different database name
+- `--scope TEXT` — `full` | `schema` | `data` (PostgreSQL)
+- `--clean / --no-clean` — drop existing objects first (default: clean)
+- `--schema TEXT` — repeatable; restore only these schemas
+- `--no-owner` — restore with `--no-owner --no-privileges`
+- `--dry-run` — print the plan and exit without changing anything
+- `--yes, -y` — required to actually execute a non-interactive restore
 - `--all-engines, -a` — restore all engines sequentially (multi-engine config)
 - `--docker / --no-docker`
 - `--db-type, -t`
 - `--config, -c PATH`
+
+Without `--yes` a non-interactive run prints the plan and exits without touching the server.
+
+```bash
+# Preview a restore
+fuelrod-backup restore -n -p fuelrod -d app --target-db app_restored --dry-run
+
+# Run it unattended (cron/CI)
+fuelrod-backup restore -n -p fuelrod -d app --target-db app_restored --yes
+```
 
 ### `drop`
 

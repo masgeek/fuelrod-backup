@@ -256,11 +256,7 @@ def _step_select_file(db_dir: Path, database: str) -> Path:
     """Step 4: list backup files directly in db_dir; return chosen file."""
     _section("Step 4 — Select Backup File")
 
-    backups: list[Path] = []
-    for pat in _BACKUP_EXTENSIONS:
-        backups.extend(db_dir.glob(pat))
-    backups = sorted(set(backups))
-
+    backups = _list_backup_files(db_dir)
     if not backups:
         _die(f"No backup files found for '{database}' in {db_dir}")
 
@@ -474,7 +470,6 @@ def _step_target_db(database: str, dry_run: bool, adapter: DbAdapter) -> str:
 
     if not dry_run:
         if adapter.db_exists(target):
-            console.print(f"  [yellow]Database '{target}' already exists.[/]")
             drop_it = questionary.select(
                 "Action",
                 choices=[
@@ -483,17 +478,9 @@ def _step_target_db(database: str, dry_run: bool, adapter: DbAdapter) -> str:
                 ],
                 default="keep",
             ).ask()
-            if drop_it == "drop":
-                killed = adapter.terminate_connections(target)
-                if killed:
-                    console.print(f"  [yellow]Terminated {killed} active connection(s) to '{target}'.[/]")
-                console.print(f"  Dropping '{target}'...")
-                adapter.drop_db(target)
-                console.print(f"  Creating '{target}'...")
-                adapter.create_db(target)
         else:
-            console.print(f"  Creating '{target}'...")
-            adapter.create_db(target)
+            drop_it = "drop"  # nothing to keep — just create it
+        _prepare_target_db(target, adapter, drop_existing=(drop_it == "drop"))
 
     return target
 
@@ -616,8 +603,187 @@ def _execute_pg_restore_v2(
             tmp_plain.unlink()
 
 
-def run_restore(cfg: Config) -> None:
-    """Main restore workflow (always interactive)."""
+def _list_backup_files(db_dir: Path) -> list[Path]:
+    """All backup artifacts directly inside *db_dir*, oldest first."""
+    backups: list[Path] = []
+    for pat in _BACKUP_EXTENSIONS:
+        backups.extend(db_dir.glob(pat))
+    return sorted(set(backups), key=lambda p: (p.stat().st_mtime, p.name))
+
+
+def _resolve_backup_file(db_dir: Path, database: str, file_name: str | None) -> Path:
+    """
+    Resolve the backup file for a non-interactive run.
+
+    With *file_name* it must exist inside *db_dir* (no path separators, no
+    traversal); otherwise the most recently modified backup is used.
+    """
+    backups = _list_backup_files(db_dir)
+    if not backups:
+        _die(f"No backup files found for '{database}' in {db_dir}")
+
+    if not file_name:
+        return backups[-1]
+
+    if "/" in file_name or "\\" in file_name or file_name in (".", ".."):
+        _die(f"Invalid backup file name: {file_name!r} (must be a bare file name).")
+
+    chosen = db_dir / file_name
+    _validate_resolved_path(chosen.resolve(), db_dir.resolve())
+    if not chosen.is_file():
+        _die(f"Backup file not found: {chosen}")
+    return chosen
+
+
+def _prepare_target_db(
+    target: str,
+    adapter: DbAdapter,
+    *,
+    drop_existing: bool,
+) -> None:
+    """Create the target database, optionally dropping an existing one first."""
+    if not adapter.db_exists(target):
+        console.print(f"  Creating '{target}'...")
+        adapter.create_db(target)
+        return
+
+    console.print(f"  [yellow]Database '{target}' already exists.[/]")
+    if not drop_existing:
+        console.print("  Keeping existing database — restore will overlay onto it.")
+        return
+
+    killed = adapter.terminate_connections(target)
+    if killed:
+        console.print(f"  [yellow]Terminated {killed} active connection(s) to '{target}'.[/]")
+    console.print(f"  Dropping '{target}'...")
+    adapter.drop_db(target)
+    console.print(f"  Creating '{target}'...")
+    adapter.create_db(target)
+
+
+def _perform_restore(
+        cfg: Config,
+        adapter: DbAdapter,
+        backup_file: Path,
+        target_db: str,
+        *,
+        toc: str,
+        selected_schemas: list[str],
+        schema_args: list[str],
+        schema_remap: dict[str, str],
+        scope_args: list[str],
+        clean_args: list[str],
+        table_args: list[str],
+        role_args: list[str],
+        jobs: int,
+) -> None:
+    """Run the engine-specific restore and print the post-restore report."""
+    console.print()
+    console.print(f"  Restoring [bold]{backup_file.name}[/] → [bold]{target_db}[/]")
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("{task.description}", table_column=Column(min_width=44)),
+        TimeElapsedColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("[cyan]Preparing…[/]", total=None)
+
+        try:
+            if adapter.supports_toc:
+                restore_args: list[str] = []
+                restore_args += clean_args
+                restore_args += scope_args
+                restore_args += schema_args
+                restore_args += table_args
+                restore_args += role_args
+                if jobs > 1:
+                    restore_args += ["-j", str(jobs)]
+
+                schemas_to_ensure = selected_schemas or _parse_schemas_from_toc(toc)
+                if schemas_to_ensure:
+                    progress.update(task, description=f"[cyan]Ensuring {len(schemas_to_ensure)} schema(s)…[/]")
+                    adapter.ensure_schemas(target_db, schemas_to_ensure)
+
+                progress.update(task, description=f"[cyan]Running pg_restore ({backup_file.name})…[/]")
+                _execute_pg_restore_v2(backup_file, target_db, restore_args, cfg)
+            else:
+                progress.update(task, description=f"[cyan]Restoring {backup_file.name}…[/]")
+                no_owner = "--no-owner" in role_args
+                adapter.restore_db(
+                    target_db,
+                    backup_file,
+                    schemas=selected_schemas,
+                    no_owner=no_owner,
+                )
+
+            if adapter.supports_toc and schema_remap:
+                for src, dst in schema_remap.items():
+                    progress.update(task, description=f"[cyan]Remapping {src} → {dst}…[/]")
+                    try:
+                        adapter.remap_schema(src, dst, target_db)
+                    except Exception as exc:  # noqa: BLE001
+                        console.print(f"  [yellow]WARN:[/] remap {src} → {dst} failed: {exc}")
+
+            progress.update(task, description=f"[green]✓ Restore complete → {target_db}[/]", total=1, completed=1)
+
+        except subprocess.CalledProcessError as exc:
+            progress.update(task, description="[red]✗ Restore failed[/]", total=1, completed=1)
+            _die(f"Restore failed (exit {exc.returncode}). Check output above for details.")
+        except Exception as exc:
+            progress.update(task, description="[red]✗ Restore failed[/]", total=1, completed=1)
+            _die(f"Restore failed: {exc}")
+
+    if adapter.supports_toc:
+        _section("Post-Restore Report")
+        table_count = adapter.get_table_count(target_db)
+        console.print(f"  Tables restored : {table_count}")
+        for schema in selected_schemas:
+            effective = schema_remap.get(schema, schema)
+            cnt = adapter.get_table_count(target_db, schema=effective)
+            label = f"{schema} → {effective}" if schema in schema_remap else schema
+            console.print(f"    {label:<36} {cnt} tables")
+
+    console.print()
+    console.print(Panel(f"[bold green]RESTORE COMPLETE → {target_db}[/]", expand=False))
+
+
+def run_restore(
+    cfg: Config,
+    *,
+    interactive: bool = True,
+    project: str | None = None,
+    database: str | None = None,
+    file_name: str | None = None,
+    target: str | None = None,
+    scope: str = "full",
+    clean: bool = True,
+    schemas: list[str] | None = None,
+    no_owner: bool = False,
+    dry_run: bool = False,
+    yes: bool = False,
+) -> None:
+    """Restore a database from a dump file.
+
+    Interactive by default. With ``interactive=False`` every prompt is replaced
+    by an explicit option, so the command is safe to run from cron or CI.
+    """
+    if not interactive:
+        run_restore_noninteractive(
+            cfg,
+            project=project,
+            database=database,
+            file_name=file_name,
+            target=target,
+            scope=scope,
+            clean=clean,
+            schemas=schemas,
+            no_owner=no_owner,
+            dry_run=dry_run,
+            yes=yes,
+        )
+        return
+
     adapter = get_adapter(cfg)
 
     if not cfg.password:
@@ -738,73 +904,188 @@ def run_restore(cfg: Config) -> None:
         console.print("[yellow]Aborted by user.[/]")
         sys.exit(0)
 
-    # ── Execute ────────────────────────────────────────────────────
-    console.print()
-    console.print(f"  Restoring [bold]{backup_file.name}[/] → [bold]{target_db}[/]")
+    _perform_restore(
+        cfg,
+        adapter,
+        backup_file,
+        target_db,
+        toc=toc,
+        selected_schemas=selected_schemas,
+        schema_args=schema_args,
+        schema_remap=schema_remap,
+        scope_args=scope_args,
+        clean_args=clean_args,
+        table_args=table_args,
+        role_args=role_args,
+        jobs=jobs,
+    )
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  Non-interactive restore
+# ──────────────────────────────────────────────────────────────────────────────
+
+_SCOPE_ARGS = {
+    "full": [],
+    "schema": ["--schema-only"],
+    "data": ["--data-only"],
+}
+
+
+def run_restore_noninteractive(
+    cfg: Config,
+    *,
+    project: str | None,
+    database: str | None,
+    file_name: str | None,
+    target: str | None,
+    scope: str,
+    clean: bool,
+    schemas: list[str] | None,
+    no_owner: bool,
+    dry_run: bool,
+    yes: bool,
+) -> None:
+    """Restore without any prompt; every decision comes from the caller."""
+    adapter = get_adapter(cfg)
+
+    if not cfg.password:
+        _die("Password is required. Set the appropriate *_PASSWORD variable in .backup.")
+    if not cfg.base_dir or not Path(cfg.base_dir).is_dir():
+        _die(f"Backup directory not found: {cfg.base_dir}")
+    if scope not in _SCOPE_ARGS:
+        _die(f"Invalid scope {scope!r}. Use one of: {', '.join(_SCOPE_ARGS)}.")
+    if not project:
+        _die("--project is required with --no-interactive (the top-level folder under BASE_DIR).")
+    if not database:
+        _die("--db is required with --no-interactive (the database folder name).")
+
+    console.print(Panel(
+        f"[bold cyan]{cfg.db_type.value.upper()} Restore[/] [dim](non-interactive)[/]",
+        expand=False,
+    ))
+
+    base = Path(cfg.base_dir).resolve()
+    top_dir = (base / project).resolve()
+    _validate_resolved_path(top_dir, base)
+    if not top_dir.is_dir():
+        _die(f"Project directory not found: {top_dir}")
+
+    engine_dir = _resolve_engine_dir(top_dir, cfg.db_type.value)
+    db_dir = (engine_dir / database).resolve()
+    _validate_resolved_path(db_dir, engine_dir)
+    if not db_dir.is_dir():
+        _die(f"Database directory not found: {db_dir}")
+
+    backup_file = _resolve_backup_file(db_dir, database, file_name)
+    target_db = target or database
+
+    # ── Engine-specific options, derived from the dump itself ────────────
+    toc = ""
+    selected_schemas: list[str] = []
+    schema_args: list[str] = []
+    role_args: list[str] = []
+    scope_args: list[str] = []
+    clean_args: list[str] = []
+    table_args: list[str] = []
+    jobs = 1
+
+    if adapter.supports_toc:
+        toc = _read_toc_quiet(adapter, backup_file)
+
+        if adapter.supports_schemas:
+            available = _parse_schemas_from_toc(toc)
+            selected_schemas = list(schemas) if schemas else available
+            if schemas:
+                unknown = [s for s in selected_schemas if available and s not in available]
+                if unknown:
+                    _die(f"Schema(s) not present in the dump: {', '.join(unknown)}")
+                for s in selected_schemas:
+                    schema_args += ["-n", s]
+
+        if adapter.supports_roles and no_owner:
+            role_args = ["--no-owner", "--no-privileges"]
+        elif adapter.supports_roles:
+            missing = [r for r in _parse_owners_from_toc(toc) if not adapter.role_exists(r)]
+            if missing:
+                console.print(
+                    f"  [yellow]WARN:[/] {len(missing)} role(s) missing on target: "
+                    f"{', '.join(missing)}"
+                )
+                console.print("        Pass --no-owner to skip ownership, or create them first.")
+
+        scope_args = _SCOPE_ARGS[scope]
+        if clean and scope != "data":
+            clean_args = ["--clean", "--if-exists"]
+    elif adapter.supports_schemas and schemas:
+        selected_schemas = list(schemas)
+
+    # ── Plan ────────────────────────────────────────────────────────
+    console.print()
+    console.print(Panel("[bold]RESTORE PLAN[/]", expand=False))
+    console.print(f"  Engine      : [cyan]{cfg.db_type.value}[/]")
+    console.print(f"  Source file : [bold]{backup_file.name}[/]  ({_human_size(backup_file)})")
+    console.print(f"  Target DB   : [bold]{target_db}[/]")
+    if adapter.supports_schemas:
+        console.print(f"  Schemas     : {', '.join(selected_schemas) or 'all'}")
+    if adapter.supports_toc:
+        console.print(f"  Scope       : {scope}")
+        console.print(f"  Drop first  : {'yes' if clean_args else 'no'}")
+        console.print(f"  No-owner    : {'yes' if no_owner else 'no'}")
+    console.print(f"  Drop target : {'yes' if _target_exists(adapter, target_db) else 'no (will be created)'}")
+    console.print()
+
+    if dry_run:
+        console.print("[yellow]Dry run complete. No changes were made.[/]")
+        return
+
+    if not yes:
+        console.print(
+            "[yellow]Not executed.[/] Non-interactive restore requires --yes to run "
+            "(or --dry-run to only print this plan)."
+        )
+        return
+
+    _prepare_target_db(target_db, adapter, drop_existing=clean and scope != "data")
+
+    _perform_restore(
+        cfg,
+        adapter,
+        backup_file,
+        target_db,
+        toc=toc,
+        selected_schemas=selected_schemas,
+        schema_args=schema_args,
+        schema_remap={},
+        scope_args=scope_args,
+        clean_args=clean_args,
+        table_args=table_args,
+        role_args=role_args,
+        jobs=jobs,
+    )
+
+
+def _target_exists(adapter: DbAdapter, target: str) -> bool:
+    """db_exists() that never raises — used only for the plan summary."""
+    try:
+        return adapter.db_exists(target)
+    except Exception:  # noqa: BLE001 — plan output must not abort the run
+        return False
+
+
+def _read_toc_quiet(adapter: DbAdapter, backup_file: Path) -> str:
+    """Read the dump TOC, dying with a clear message on failure."""
     with Progress(
         SpinnerColumn(),
         TextColumn("{task.description}", table_column=Column(min_width=44)),
         TimeElapsedColumn(),
         console=console,
-    ) as progress:
-        task = progress.add_task("[cyan]Preparing…[/]", total=None)
-
+    ) as p:
+        t = p.add_task("[cyan]Reading table of contents…[/]", total=None)
         try:
-            if adapter.supports_toc:
-                restore_args: list[str] = []
-                restore_args += clean_args
-                restore_args += scope_args
-                restore_args += schema_args
-                restore_args += table_args
-                restore_args += role_args
-                if jobs > 1:
-                    restore_args += ["-j", str(jobs)]
-
-                schemas_to_ensure = selected_schemas or _parse_schemas_from_toc(toc)
-                if schemas_to_ensure:
-                    progress.update(task, description=f"[cyan]Ensuring {len(schemas_to_ensure)} schema(s)…[/]")
-                    adapter.ensure_schemas(target_db, schemas_to_ensure)
-
-                progress.update(task, description=f"[cyan]Running pg_restore ({backup_file.name})…[/]")
-                _execute_pg_restore_v2(backup_file, target_db, restore_args, cfg)
-            else:
-                progress.update(task, description=f"[cyan]Restoring {backup_file.name}…[/]")
-                no_owner = "--no-owner" in role_args
-                adapter.restore_db(
-                    target_db,
-                    backup_file,
-                    schemas=selected_schemas,
-                    no_owner=no_owner,
-                )
-
-            if adapter.supports_toc and schema_remap:
-                for src, dst in schema_remap.items():
-                    progress.update(task, description=f"[cyan]Remapping {src} → {dst}…[/]")
-                    try:
-                        adapter.remap_schema(src, dst, target_db)
-                    except Exception as exc:  # noqa: BLE001
-                        console.print(f"  [yellow]WARN:[/] remap {src} → {dst} failed: {exc}")
-
-            progress.update(task, description=f"[green]✓ Restore complete → {target_db}[/]", total=1, completed=1)
-
-        except subprocess.CalledProcessError as exc:
-            progress.update(task, description="[red]✗ Restore failed[/]", total=1, completed=1)
-            _die(f"Restore failed (exit {exc.returncode}). Check output above for details.")
-        except Exception as exc:
-            progress.update(task, description="[red]✗ Restore failed[/]", total=1, completed=1)
-            _die(f"Restore failed: {exc}")
-
-    # ── Post-restore stats (PG only) ───────────────────────────────
-    if adapter.supports_toc:
-        _section("Post-Restore Report")
-        table_count = adapter.get_table_count(target_db)
-        console.print(f"  Tables restored : {table_count}")
-        for schema in selected_schemas:
-            effective = schema_remap.get(schema, schema)
-            cnt = adapter.get_table_count(target_db, schema=effective)
-            label = f"{schema} → {effective}" if schema in schema_remap else schema
-            console.print(f"    {label:<36} {cnt} tables")
-
-    console.print()
-    console.print(Panel(f"[bold green]RESTORE COMPLETE → {target_db}[/]", expand=False))
+            toc = adapter.read_toc(backup_file)
+        except (subprocess.CalledProcessError, FileNotFoundError, OSError) as exc:
+            p.update(t, description="[red]✗ TOC read failed[/]", total=1, completed=1)
+            _die(f"Failed to read dump TOC: {exc}")
+        p.update(t, description="[green]✓ TOC loaded[/]", total=1, completed=1)
+        return toc

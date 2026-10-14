@@ -25,7 +25,7 @@ Use this as the execution tracker. Items are ordered from highest to lowest reco
 
 ## Planned
 
-- [ ] 1. Non-interactive restore mode
+- [x] 1. Non-interactive restore mode (`restore -n -p PROJECT -d DB [--file] [--yes]`)
 - [ ] 2. Structured logs and machine-readable output
 - [ ] 3. Pre-flight checks command (`doctor`)
 - [ ] 4. Backup verification command (`verify`)

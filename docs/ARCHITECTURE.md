@@ -53,6 +53,13 @@ Multi-engine mode (`--all-engines`) runs each engine in parallel via `ThreadPool
    - **MSSQL** — T-SQL `RESTORE DATABASE` via pymssql; copies `.bak` into container with `docker cp` if needed.
 4. Print restore summary and post-restore stats (PostgreSQL).
 
+`restore.py` also exposes a non-interactive path (`run_restore(interactive=False)`, CLI `-n`) for
+cron/CI: `--project` and `--db` replace the directory prompts, `--file` defaults to the newest
+backup by mtime, schema/scope/role options replace the TOC analysis prompts, and `--yes` is
+required to execute — without it the run only prints the plan. Both paths share `_prepare_target_db`
+(drop-or-overlay + create) and `_perform_restore` (ensure schemas, run the engine restore, remap,
+post-restore report).
+
 ## Drop Flow
 
 1. List databases (or schemas for PostgreSQL).

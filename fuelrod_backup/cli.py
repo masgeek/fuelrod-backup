@@ -118,6 +118,53 @@ def backup(
 
 @app.command()
 def restore(
+        no_interactive: Annotated[
+            bool,
+            typer.Option(
+                "--no-interactive", "-n",
+                help="Skip all wizard prompts. Requires --project and --db; needs --yes to execute.",
+            ),
+        ] = False,
+        project: Annotated[
+            str | None,
+            typer.Option("--project", "-p", help="Project/group folder under BASE_DIR."),
+        ] = None,
+        databases: Annotated[
+            list[str],
+            typer.Option("--db", "-d", help="Database(s) to restore (repeatable)."),
+        ] = [],
+        file_name: Annotated[
+            str | None,
+            typer.Option("--file", "-f", help="Backup file name inside the database folder. Default: latest."),
+        ] = None,
+        target: Annotated[
+            str | None,
+            typer.Option("--target-db", help="Restore into this database name (default: same as --db)."),
+        ] = None,
+        scope: Annotated[
+            str,
+            typer.Option("--scope", help="full | schema | data (PostgreSQL only)."),
+        ] = "full",
+        clean: Annotated[
+            bool,
+            typer.Option("--clean/--no-clean", help="Drop existing objects before restoring."),
+        ] = True,
+        schemas: Annotated[
+            list[str],
+            typer.Option("--schema", help="Restore only this schema (repeatable)."),
+        ] = [],
+        no_owner: Annotated[
+            bool,
+            typer.Option("--no-owner", help="Restore with --no-owner --no-privileges (skip ownership)."),
+        ] = False,
+        dry_run: Annotated[
+            bool,
+            typer.Option("--dry-run", help="Print the restore plan and exit without changing anything."),
+        ] = False,
+        yes: Annotated[
+            bool,
+            typer.Option("--yes", "-y", help="Execute without the final confirmation (non-interactive)."),
+        ] = False,
         all_engines: Annotated[
             bool,
             typer.Option(
@@ -129,10 +176,12 @@ def restore(
         db_type: Annotated[str | None, _DB_TYPE_OPT] = None,
         config_file: Annotated[Path | None, _CONFIG_OPT] = None,
 ) -> None:
-    """Interactively restore a database from a dump file (postgres | mariadb | mssql).
+    """Restore a database from a dump file (postgres | mariadb | mssql).
 
-    Use --all-engines to step through the restore wizard for every engine
-    whose PG_/MY_/MS_ credentials are configured, one engine at a time.
+    Interactive by default. With --no-interactive every prompt is replaced by
+    an explicit option: --project and --db are required, --file defaults to the
+    latest backup, and --yes is required to actually execute (otherwise the
+    plan is printed and nothing is changed).
     """
     from .restore import run_restore
 
@@ -149,12 +198,53 @@ def restore(
         for cfg in configs:
             if len(configs) > 1:
                 console.print(f"\n[bold cyan]─── {cfg.db_type.value.upper()} ───[/]")
-            run_restore(cfg)
+            run_restore(cfg, interactive=not no_interactive)
         return
+
+    if not databases:
+        if no_interactive:
+            console.print("[bold red]ERROR:[/] --db is required with --no-interactive.")
+            raise typer.Exit(code=2)
+    elif len(databases) > 1 and not no_interactive:
+        console.print("[bold red]ERROR:[/] Interactive restore handles one database at a time.")
+        raise typer.Exit(code=2)
 
     cfg = load_config(config_file, db_type_override=db_type)
     _apply_docker_override(cfg, use_docker)
-    run_restore(cfg)
+
+    if len(databases) > 1:
+        # Multi-database automation: one target database per source.
+        for db in databases:
+            run_restore(
+                cfg,
+                interactive=False,
+                project=project,
+                database=db,
+                file_name=file_name,
+                target=target,
+                scope=scope,
+                clean=clean,
+                schemas=list(schemas),
+                no_owner=no_owner,
+                dry_run=dry_run,
+                yes=yes,
+            )
+        return
+
+    run_restore(
+        cfg,
+        interactive=not no_interactive,
+        project=project,
+        database=databases[0] if databases else None,
+        file_name=file_name,
+        target=target,
+        scope=scope,
+        clean=clean,
+        schemas=list(schemas),
+        no_owner=no_owner,
+        dry_run=dry_run,
+        yes=yes,
+    )
 
 
 @app.command("drop")
