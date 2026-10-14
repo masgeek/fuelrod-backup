@@ -4,21 +4,25 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+import os
 import re
 import shutil
 import sys
 import zipfile
 import zlib
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from rich.console import Console
 from rich.panel import Panel
-from rich.table import Table
+from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
+from rich.table import Column, Table
 
 from .config import Config
+from .output import emit, json_enabled, register
 
-console = Console()
+console = register(Console())
 
 # Artifact kinds, keyed by the extension chain after stripping optional .gz
 _KIND_BY_EXT = {
@@ -167,22 +171,34 @@ def _decompressed_size(path: Path) -> int:
     return total
 
 
-def check_sql(path: Path) -> list[Check]:
-    """A plain-text SQL dump must decompress cleanly and look like SQL."""
+# Bytes of the stream inspected for the SQL header check.
+_HEADER_PROBE = 65536
+
+
+def check_sql(path: Path, *, deep: bool = False) -> list[Check]:
+    """
+    A plain-text SQL dump must look like SQL and, in deep mode, decompress
+    cleanly to the last byte (which is what validates the gzip CRC/trailer).
+
+    The default is a cheap header probe: real backup trees hold thousands of
+    multi-gigabyte archives, and a full decompress of every one of them is a
+    job for ``--deep``, not for a routine verify.
+    """
     checks: list[Check] = [_check_readable(path)]
     try:
-        if path.name.endswith(".gz"):
-            plain = _decompressed_size(path)
-            if plain == 0:
-                checks.append(Check("gzip", "fail", "decompressed to 0 bytes"))
-                return checks
-            checks.append(Check("gzip", "ok", f"{plain / 1024 / 1024:.2f} MB uncompressed"))
-            source = _gzip_stream(path)
-        else:
-            source = path.open("rb")
-
+        source = _gzip_stream(path) if path.name.endswith(".gz") else path.open("rb")
         with source as fh:
-            head = fh.read(8192)
+            head = fh.read(_HEADER_PROBE)
+            if deep and path.name.endswith(".gz"):
+                total = len(head)
+                while chunk := fh.read(4 * 1024 * 1024):
+                    total += len(chunk)
+                if total == 0:
+                    checks.append(Check("gzip", "fail", "decompressed to 0 bytes"))
+                    return checks
+                checks.append(Check("gzip", "ok", f"{total / 1024 / 1024:.2f} MB uncompressed"))
+            elif path.name.endswith(".gz"):
+                checks.append(Check("gzip", "skip", "header only — use --deep for a full CRC check"))
         checks.append(_looks_like_sql(head))
     except (OSError, EOFError, zlib.error) as exc:
         checks.append(Check("decompress", "fail", f"{type(exc).__name__}: {exc}"))
@@ -198,19 +214,25 @@ def _looks_like_sql(head: bytes) -> Check:
     return Check("content", "warn", "header does not look like SQL")
 
 
-def check_zip(path: Path) -> list[Check]:
+def check_zip(path: Path, *, deep: bool = False) -> list[Check]:
+    """Central-directory check by default; entry CRCs only with ``deep``."""
     checks: list[Check] = [_check_readable(path)]
     try:
         with zipfile.ZipFile(path) as zf:
-            bad = zf.testzip()
-            if bad is not None:
-                checks.append(Check("crc", "fail", f"corrupt entry: {bad}"))
-                return checks
             names = zf.namelist()
             if not names:
                 checks.append(Check("crc", "fail", "archive is empty"))
                 return checks
-            checks.append(Check("crc", "ok", f"{len(names)} entries verified"))
+            if deep:
+                bad = zf.testzip()
+                if bad is not None:
+                    checks.append(Check("crc", "fail", f"corrupt entry: {bad}"))
+                    return checks
+                checks.append(Check("crc", "ok", f"{len(names)} entries verified"))
+            else:
+                checks.append(Check(
+                    "crc", "skip", f"{len(names)} entries listed — use --deep for a full CRC check",
+                ))
     except (zipfile.BadZipFile, OSError) as exc:
         checks.append(Check("crc", "fail", f"BadZipFile: {exc}"))
     return checks
@@ -276,12 +298,15 @@ def sha256_file(path: Path, chunk: int = 1024 * 1024) -> str:
 #  PostgreSQL TOC check (needs pg_restore, never needs a live DB)
 # ──────────────────────────────────────────────────────────────────────────────
 
-def check_pg_custom(path: Path, cfg: Config | None) -> list[Check]:
+def check_pg_custom(path: Path, cfg: Config | None, *, deep: bool = False) -> list[Check]:
     checks: list[Check] = [_check_readable(path)]
     if path.name.endswith(".gz"):
         try:
-            plain = _decompressed_size(path)
-            checks.append(Check("gzip", "ok" if plain else "fail", f"{plain / 1024 / 1024:.2f} MB uncompressed"))
+            plain = _decompressed_size(path) if deep else 0
+            if deep:
+                checks.append(Check("gzip", "ok" if plain else "fail", f"{plain / 1024 / 1024:.2f} MB uncompressed"))
+            else:
+                checks.append(Check("gzip", "skip", "header only — use --deep for a full CRC check"))
         except (OSError, EOFError, zlib.error) as exc:
             checks.append(Check("gzip", "fail", f"{type(exc).__name__}: {exc}"))
             return checks
@@ -317,17 +342,23 @@ def check_pg_custom(path: Path, cfg: Config | None) -> list[Check]:
 #  Orchestration
 # ──────────────────────────────────────────────────────────────────────────────
 
-def verify_artifact(path: Path, cfg: Config | None, *, checksum: bool = False) -> ArtifactResult:
+def verify_artifact(
+    path: Path,
+    cfg: Config | None,
+    *,
+    checksum: bool = False,
+    deep: bool = False,
+) -> ArtifactResult:
     """Run every applicable check against one artifact."""
     kind = classify_artifact(path)
     result = ArtifactResult(path=path, kind=kind, size=path.stat().st_size)
 
     if kind == "pg_custom":
-        result.checks += check_pg_custom(path, cfg)
+        result.checks += check_pg_custom(path, cfg, deep=deep)
     elif kind == "sql":
-        result.checks += check_sql(path)
+        result.checks += check_sql(path, deep=deep)
     elif kind == "zip":
-        result.checks += check_zip(path)
+        result.checks += check_zip(path, deep=deep)
     elif kind == "bak":
         result.checks += check_bak(path)
     elif kind.startswith("encrypted:"):
@@ -351,6 +382,8 @@ def run_verify(
     database: str | None = None,
     latest_only: bool = False,
     checksum: bool = False,
+    deep: bool = False,
+    parallel: int | None = None,
 ) -> int:
     """Verify backup artifacts. Returns a process exit code."""
     base = Path(cfg.base_dir) if cfg.base_dir else Path(".")
@@ -368,12 +401,67 @@ def run_verify(
         latest_only=latest_only,
     )
     if not artifacts:
-        console.print(f"[yellow]No backup artifacts found under {base}.[/]")
+        if json_enabled():
+            emit({
+                "command": "verify",
+                "status": "ok",
+                "base_dir": str(base),
+                "summary": {
+                    "artifacts": 0,
+                    "by_status": {"ok": 0, "warn": 0, "skip": 0, "fail": 0},
+                    "checks_by_status": {"ok": 0, "warn": 0, "skip": 0, "fail": 0},
+                },
+                "artifacts": [],
+            })
+        else:
+            console.print(f"[yellow]No backup artifacts found under {base}.[/]")
         return 0
 
-    console.print(Panel(f"[bold cyan]VERIFY[/] — {base}", expand=False))
+    if not json_enabled():
+        console.print(Panel(f"[bold cyan]VERIFY[/] — {base}", expand=False))
 
-    results = [verify_artifact(p, engine_cfg, checksum=checksum) for p in artifacts]
+    results = _verify_all(
+        artifacts,
+        engine_cfg,
+        checksum=checksum,
+        deep=deep,
+        parallel=parallel,
+    )
+
+    failed = [r for r in results if not r.ok]
+    warned = [r for r in results if r.status == "warn"]
+    skipped = [r for r in results if r.status == "skip"]
+
+    if json_enabled():
+        emit({
+            "command": "verify",
+            "status": "fail" if failed else "ok",
+            "base_dir": str(base),
+            "summary": {
+                "artifacts": len(results),
+                "by_status": {
+                    "ok": len(results) - len(failed) - len(warned) - len(skipped),
+                    "warn": len(warned),
+                    "skip": len(skipped),
+                    "fail": len(failed),
+                },
+                "checks_by_status": _count_checks(results),
+            },
+            "artifacts": [
+                {
+                    "path": str(r.path),
+                    "kind": r.kind,
+                    "size": r.size,
+                    "status": r.status,
+                    "checks": [
+                        {"name": c.name, "status": c.status, "detail": c.detail}
+                        for c in r.checks
+                    ],
+                }
+                for r in results
+            ],
+        })
+        return 1 if failed else 0
 
     table = Table(show_header=True, header_style="bold")
     table.add_column("", width=3)
@@ -386,8 +474,6 @@ def run_verify(
         table.add_row(_STATUS_ICON[r.status], r.path.name, r.kind, _human(r.size), detail)
     console.print(table)
 
-    failed = [r for r in results if not r.ok]
-    warned = [r for r in results if r.status == "warn"]
     console.print()
     console.print(
         f"  [green]{len(results) - len(failed) - len(warned)} ok[/]  "
@@ -402,6 +488,55 @@ def run_verify(
                     console.print(f"  [red]✗[/] {r.path.name} → {c.name}: {c.detail}")
         console.print()
     return 1 if failed else 0
+
+
+def _count_checks(results: list[ArtifactResult]) -> dict[str, int]:
+    """Tally individual checks across all artifacts (more informative than the
+    per-artifact worst status, which is dominated by `skip`)."""
+    tally = {"ok": 0, "warn": 0, "skip": 0, "fail": 0}
+    for r in results:
+        for c in r.checks:
+            tally[c.status] = tally.get(c.status, 0) + 1
+    return tally
+
+
+def _verify_all(
+    artifacts: list[Path],
+    engine_cfg: Config | None,
+    *,
+    checksum: bool,
+    deep: bool,
+    parallel: int | None,
+) -> list[ArtifactResult]:
+    """
+    Check every artifact, in parallel and with a progress bar.
+
+    Real backup trees hold thousands of files; a serial pass over them looks
+    like a hang, and decompression is CPU/IO bound so threads still help.
+    """
+    workers = parallel or min(8, (os.cpu_count() or 2))
+    workers = max(1, min(workers, len(artifacts)))
+
+    def _work(path: Path) -> ArtifactResult:
+        return verify_artifact(path, engine_cfg, checksum=checksum, deep=deep)
+
+    if json_enabled() or workers == 1:
+        return [_work(p) for p in artifacts]
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("{task.description}", table_column=Column(min_width=44)),
+        BarColumn(),
+        TimeElapsedColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task(f"[cyan]Checking {len(artifacts)} artifact(s)…[/]", total=len(artifacts))
+        results: list[ArtifactResult] = []
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for result in pool.map(_work, artifacts):
+                results.append(result)
+                progress.advance(task)
+    return results
 
 
 def _human(size: int) -> str:

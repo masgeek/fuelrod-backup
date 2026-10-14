@@ -14,8 +14,9 @@ from rich.panel import Panel
 from rich.table import Table
 
 from .config import Config
+from .output import emit, json_enabled, register
 
-console = Console()
+console = register(Console())
 
 _STATUS_ORDER = {"fail": 0, "warn": 1, "skip": 2, "ok": 3}
 _STATUS_ICON = {"ok": "[green]✓[/]", "warn": "[yellow]![/]", "fail": "[red]✗[/]", "skip": "[dim]-[/]"}
@@ -317,6 +318,24 @@ def run_doctor(cfg: Config, *, skip_connection: bool = False) -> int:
         check_connection(cfg, report)
     check_rclone(cfg, report)
     check_n8n_services(cfg, report)
+
+    if json_enabled():
+        emit({
+            "command": "doctor",
+            "status": "fail" if report.failures else "ok",
+            "summary": {
+                "total": len(report.checks),
+                "ok": len(report.checks) - len(report.failures) - len(report.warnings),
+                "warn": len(report.warnings),
+                "fail": len(report.failures),
+                "skip": sum(1 for d in report.checks if d.status == "skip"),
+            },
+            "checks": [
+                {"name": d.name, "status": d.status, "detail": d.detail, "hint": d.hint}
+                for d in report.checks
+            ],
+        })
+        return 1 if report.failures else 0
 
     console.print(Panel("[bold cyan]DOCTOR[/] — pre-flight checks", expand=False))
 

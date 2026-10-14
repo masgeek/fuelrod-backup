@@ -20,8 +20,9 @@ from . import prompt as questionary
 from .adapters import get_adapter
 from .adapters.base import DbAdapter
 from .config import Config
+from .output import emit, json_enabled, register
 
-console = Console()
+console = register(Console())
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -308,6 +309,7 @@ def run_backup(
     _section("Running Backup")
 
     n = len(dbs_to_backup)
+    dumped: list[dict] = []
     with Progress(
         SpinnerColumn(),
         TextColumn("{task.description}", table_column=Column(min_width=44)),
@@ -318,9 +320,17 @@ def run_backup(
         for i, db in enumerate(dbs_to_backup, 1):
             task_id = progress.add_task(f"[dim]{db}[/]", total=1, completed=0)
             try:
-                _backup_one(db, cfg, adapter, progress=progress, task_id=task_id)
+                dump_file = _backup_one(db, cfg, adapter, progress=progress, task_id=task_id)
+                dumped.append({
+                    "database": db,
+                    "file": str(dump_file),
+                    "size": dump_file.stat().st_size,
+                    "status": "ok",
+                })
             except subprocess.CalledProcessError as exc:
                 progress.update(task_id, description=f"[red]✗ {db}[/]", completed=1)
+                dumped.append({"database": db, "file": None, "size": 0,
+                               "status": "fail", "error": f"exit code {exc.returncode}"})
                 _die(f"Backup failed for '{db}': exit code {exc.returncode}")
             except Exception as exc:
                 progress.update(task_id, description=f"[red]✗ {db}[/]", completed=1)
@@ -328,6 +338,18 @@ def run_backup(
             progress.update(overall, advance=1, description=f"[bold cyan]{i}/{n} databases[/]")
 
     _cleanup_old(str(cfg.backup_dir), cfg.days_to_keep)
+
+    if json_enabled():
+        emit({
+            "command": "backup",
+            "status": "ok",
+            "engine": cfg.db_type.value,
+            "backup_dir": str(cfg.backup_dir),
+            "compressed": cfg.compress,
+            "keep_days": cfg.days_to_keep,
+            "databases": dumped,
+        })
+        return
 
     console.print()
     console.print(Panel("[bold green]BACKUP COMPLETE[/]", expand=False))
@@ -435,14 +457,28 @@ def run_parallel_backup(
                     progress.update(tid, description=f"[red]✗ {engine}  {err}[/]", total=1, completed=1)
                 results.append((engine, ok, err))
 
+    all_ok = all(ok for _, ok, _ in results)
     console.print()
-    all_ok = True
     for engine, ok, err in sorted(results):
         if ok:
             console.print(f"  [green]✓[/] {engine}")
         else:
             console.print(f"  [red]✗[/] {engine}: {err}")
             all_ok = False
+
+    if json_enabled():
+        emit({
+            "command": "backup",
+            "status": "ok" if all_ok else "fail",
+            "mode": "parallel",
+            "engines": [
+                {"engine": engine, "status": "ok" if ok else "fail", "error": err}
+                for engine, ok, err in sorted(results)
+            ],
+        })
+        if not all_ok:
+            sys.exit(1)
+        return
 
     console.print()
     if all_ok:

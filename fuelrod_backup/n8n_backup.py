@@ -14,8 +14,9 @@ from rich.table import Table
 
 from . import prompt as questionary
 from .config import Config
+from .output import register
 
-console = Console()
+console = register(Console())
 
 
 # ──────────────────────────────────────────────────────────────────────────────

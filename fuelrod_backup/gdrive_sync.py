@@ -18,8 +18,9 @@ from rich.progress import (
 from rich.table import Table
 
 from .config import Config
+from .output import register
 
-console = Console()
+console = register(Console())
 
 
 def _section(title: str) -> None:

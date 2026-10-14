@@ -168,12 +168,19 @@ so it can gate a cron job or a restore drill.
 - `--db, -d TEXT` — restrict to these database folders (repeatable)
 - `--latest, -l` — verify only the newest backup per database
 - `--checksum, -k` — also compute a SHA-256 for each artifact
+- `--deep` — fully decompress and CRC-check every archive (slow on large trees)
+- `--parallel, -j INT` — concurrent workers (default: `min(8, CPU count)`)
+- `--json` — emit a machine-readable JSON document
 - `--config, -c PATH`
 
 Checks per type: gzip/zip integrity + SQL headers for `.sql`/`.sql.gz`/`.zip`, the `MICROSOFT`
 media header for `.bak`, `pg_restore --list` for `.dump`/`.dump.gz` (no database connection
 needed), and envelope validation for encrypted artifacts. Types that cannot be checked without an
 external tool report `skip`, not failure.
+
+By default `.sql.gz`/`.zip` archives are only probed at the header level — a full decompress of
+every archive in a real backup tree (thousands of multi-GB files) is a `--deep` job. Artifacts are
+checked in parallel with a progress bar.
 
 ### `drop`
 
@@ -236,6 +243,20 @@ Upload backup files to Google Drive via rclone, with optional age-based remote p
 - `--include, -i GLOB` — repeatable; glob pattern to include
 - `--keep-local` — skip local file deletion after upload
 - `--config, -c PATH`
+
+## Machine-readable output
+
+`--json` is accepted globally and per command (`fuelrod-backup --json verify`, `fuelrod-backup
+verify --json`). It silences all human output and writes a single JSON document to stdout;
+diagnostics that are not part of the result (for example the auto-discovered config path) stay on
+stderr, so stdout stays parseable. Every document carries a `command` and a `status` field.
+
+```bash
+fuelrod-backup doctor --json | jq '.summary'
+fuelrod-backup verify --json --latest | jq '.artifacts[] | select(.status=="fail")'
+```
+
+Supported today: `backup`, `restore`, `verify`, `doctor` and `drop --disconnect-only`.
 
 ## Config
 

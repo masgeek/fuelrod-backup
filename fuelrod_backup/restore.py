@@ -20,8 +20,9 @@ from . import prompt as questionary
 from .adapters import get_adapter
 from .adapters.base import DbAdapter
 from .config import Config
+from .output import emit, json_enabled, register
 
-console = Console()
+console = register(Console())
 
 _SYSTEM_SCHEMA_RE = re.compile(
     r"^(pg_catalog|information_schema|pg_toast|pg_temp.*|-|pg_)$"
@@ -744,6 +745,13 @@ def _perform_restore(
             label = f"{schema} → {effective}" if schema in schema_remap else schema
             console.print(f"    {label:<36} {cnt} tables")
 
+    if json_enabled():
+        emit({
+            "command": "restore", "status": "ok", "engine": cfg.db_type.value,
+            "source_file": str(backup_file), "target_db": target_db, "executed": True,
+        })
+        return
+
     console.print()
     console.print(Panel(f"[bold green]RESTORE COMPLETE → {target_db}[/]", expand=False))
 
@@ -897,7 +905,13 @@ def run_restore(
     console.print()
 
     if dry_run:
-        console.print("[yellow]Dry run complete. No changes were made.[/]")
+        if json_enabled():
+            emit({
+                "command": "restore", "status": "dry_run", "engine": cfg.db_type.value,
+                "source_file": str(backup_file), "target_db": target_db, "executed": False,
+            })
+        else:
+            console.print("[yellow]Dry run complete. No changes were made.[/]")
         return
 
     if not questionary.confirm("Proceed with restore? This may be destructive.", default=True).ask():
@@ -1040,10 +1054,17 @@ def run_restore_noninteractive(
         return
 
     if not yes:
-        console.print(
-            "[yellow]Not executed.[/] Non-interactive restore requires --yes to run "
-            "(or --dry-run to only print this plan)."
-        )
+        if json_enabled():
+            emit({
+                "command": "restore", "status": "plan", "engine": cfg.db_type.value,
+                "source_file": str(backup_file), "target_db": target_db, "executed": False,
+                "reason": "no --yes given",
+            })
+        else:
+            console.print(
+                "[yellow]Not executed.[/] Non-interactive restore requires --yes to run "
+                "(or --dry-run to only print this plan)."
+            )
         return
 
     _prepare_target_db(target_db, adapter, drop_existing=clean and scope != "data")

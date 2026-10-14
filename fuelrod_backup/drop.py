@@ -13,8 +13,9 @@ from . import prompt as questionary
 from .adapters import get_adapter
 from .adapters.base import DbAdapter
 from .config import Config
+from .output import emit, json_enabled, register
 
-console = Console()
+console = register(Console())
 
 
 def _section(title: str) -> None:
@@ -153,6 +154,17 @@ def _disconnect_database(cfg: Config, adapter: DbAdapter, db_name: str | None = 
         killed = adapter.terminate_connections(target)
     except Exception as exc:
         _die(f"Disconnect failed: {exc}")
+
+    if json_enabled():
+        emit({
+            "command": "drop",
+            "action": "disconnect",
+            "engine": cfg.db_type.value,
+            "database": target,
+            "connections_terminated": killed,
+            "dropped": False,
+        })
+        return
 
     console.print()
     if killed:

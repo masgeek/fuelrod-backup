@@ -12,6 +12,7 @@ from rich.console import Console
 from rich.panel import Panel
 
 from .config import DbType, load_all_configs, load_config
+from .output import enable_json, json_enabled, register
 
 _VERSION = _pkg_version("fuelrod-backup")
 
@@ -53,14 +54,32 @@ def _main(
         bool,
         typer.Option("--version", "-V", callback=_version_callback, is_eager=True, help="Show version and exit."),
     ] = False,
+    as_json: Annotated[bool, _JSON_OPT] = False,
 ) -> None:
     _force_utf8_output()
-console = Console()
+    _enable_json(as_json)
+console = register(Console())
 
 # Reusable option definitions
 _CONFIG_OPT = typer.Option("--config", "-c", help="Path to .backup or .env config file.", exists=True, dir_okay=False)
 _DOCKER_OPT = typer.Option("--docker/--no-docker", help="Override USE_DOCKER from config (highest priority).")
 _DB_TYPE_OPT = typer.Option("--db-type", "-t", help="Database engine: postgres | mariadb | mssql.")
+_JSON_OPT = typer.Option(
+    "--json",
+    help="Emit a machine-readable JSON document on stdout instead of human output.",
+)
+
+
+def _enable_json(as_json: bool) -> bool:
+    """
+    Switch the process into JSON output mode; returns whether it is active.
+
+    Sticky by design: a global `--json` before the subcommand must not be undone
+    by a subcommand that defaults to False, so this only ever turns the mode on.
+    """
+    if as_json:
+        enable_json(True)
+    return json_enabled()
 
 
 def _apply_docker_override(cfg, use_docker: bool | None) -> None:
@@ -102,6 +121,7 @@ def backup(
         ] = [],
         use_docker: Annotated[bool | None, _DOCKER_OPT] = None,
         db_type: Annotated[str | None, _DB_TYPE_OPT] = None,
+        as_json: Annotated[bool, _JSON_OPT] = False,
         config_file: Annotated[Path | None, _CONFIG_OPT] = None,
 ) -> None:
     """Back up one or more databases (postgres | mariadb | mssql).
@@ -112,6 +132,7 @@ def backup(
     from .backup import run_backup, run_parallel_backup
 
     _validate_db_type(db_type)
+    _enable_json(as_json)
     if all_engines:
         configs = load_all_configs(config_file)
         for cfg in configs:
@@ -193,6 +214,7 @@ def restore(
         ] = False,
         use_docker: Annotated[bool | None, _DOCKER_OPT] = None,
         db_type: Annotated[str | None, _DB_TYPE_OPT] = None,
+        as_json: Annotated[bool, _JSON_OPT] = False,
         config_file: Annotated[Path | None, _CONFIG_OPT] = None,
 ) -> None:
     """Restore a database from a dump file (postgres | mariadb | mssql).
@@ -205,6 +227,7 @@ def restore(
     from .restore import run_restore
 
     _validate_db_type(db_type)
+    _enable_json(as_json)
     if all_engines:
         configs = load_all_configs(config_file)
         for cfg in configs:
@@ -272,6 +295,7 @@ def doctor(
             bool,
             typer.Option("--skip-connection", help="Skip the live database connection test."),
         ] = False,
+        as_json: Annotated[bool, _JSON_OPT] = False,
         config_file: Annotated[Path | None, _CONFIG_OPT] = None,
 ) -> None:
     """Run pre-flight checks and report everything that is not ready.
@@ -283,6 +307,7 @@ def doctor(
     """
     from .doctor import run_doctor
 
+    _enable_json(as_json)
     cfg = load_config(config_file)
     code = run_doctor(cfg, skip_connection=skip_connection)
     if code:
@@ -311,6 +336,15 @@ def verify(
             bool,
             typer.Option("--checksum", "-k", help="Also compute a SHA-256 for each artifact."),
         ] = False,
+        deep: Annotated[
+            bool,
+            typer.Option("--deep", help="Fully decompress/CRC every archive (slow on large trees)."),
+        ] = False,
+        parallel: Annotated[
+            int | None,
+            typer.Option("--parallel", "-j", help="Concurrent workers. Default: min(8, CPU count)."),
+        ] = None,
+        as_json: Annotated[bool, _JSON_OPT] = False,
         config_file: Annotated[Path | None, _CONFIG_OPT] = None,
 ) -> None:
     """Verify that backup files on disk are actually restorable.
@@ -321,6 +355,7 @@ def verify(
     """
     from .verify import run_verify
 
+    _enable_json(as_json)
     cfg = load_config(config_file)
     if engine:
         _validate_db_type(engine)
@@ -331,6 +366,8 @@ def verify(
         database=databases[0] if databases else None,
         latest_only=latest,
         checksum=checksum,
+        deep=deep,
+        parallel=parallel,
     )
     if code:
         raise typer.Exit(code=code)
@@ -348,6 +385,7 @@ def drop(
         )] = None,
         use_docker: Annotated[bool | None, _DOCKER_OPT] = None,
         db_type: Annotated[str | None, _DB_TYPE_OPT] = None,
+        as_json: Annotated[bool, _JSON_OPT] = False,
         config_file: Annotated[Path | None, _CONFIG_OPT] = None,
 ) -> None:
     """Interactively drop a database or schema.
@@ -360,6 +398,7 @@ def drop(
     """
     from .drop import run_drop
 
+    _enable_json(as_json)
     _validate_db_type(db_type)
     cfg = load_config(config_file, db_type_override=db_type)
     _apply_docker_override(cfg, use_docker)

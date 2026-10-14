@@ -13,8 +13,9 @@ from . import prompt as questionary
 from .adapters import get_adapter
 from .adapters.base import DbAdapter
 from .config import Config
+from .output import register
 
-console = Console()
+console = register(Console())
 
 
 def _section(title: str) -> None:

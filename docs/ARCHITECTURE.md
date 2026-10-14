@@ -11,6 +11,7 @@
 | `restore.py` | Restore wizard, TOC parsing, engine-specific restore |
 | `verify.py` | Offline integrity checks for backup artifacts |
 | `doctor.py` | Pre-flight diagnostics for config, tools, disk and connectivity |
+| `output.py` | JSON output mode — silences Rich consoles, emits one document |
 | `runner.py` | PostgreSQL native + subprocess operations (psycopg3) |
 | `drop.py` | Interactive database/schema drop |
 | `n8n_backup.py` | Hot Docker volume snapshots for n8n |
@@ -112,6 +113,14 @@ Key migration behaviours:
 - Foreign keys appended with `DEFERRABLE INITIALLY DEFERRED`
 - Tables with > 1 million rows bypass the thread pool and run sequentially
 - Skipped rows written to `<db>_skipped_rows.jsonl`
+
+## Output Mode
+
+`output.py` owns machine-readable output. Every module-level `Console()` is created through
+`register(console)`, so `enable_json(True)` can repoint all of them at a null sink; commands then
+call `emit(payload)` once at the end. Only `backup`, `restore`, `verify`, `doctor` and
+`drop --disconnect-only` emit structured payloads today. Anything a module logs outside the payload
+must go to stderr (`config.py` already does) so stdout stays parseable.
 
 ## Doctor Flow
 

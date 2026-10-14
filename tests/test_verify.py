@@ -65,11 +65,30 @@ class TestCheckSql:
         checks = check_sql(f)
         assert all(c.status == "ok" for c in checks)
 
-    def test_truncated_gzip_fails(self, tmp_path):
+    def test_gzip_header_only_by_default(self, tmp_path):
+        f = tmp_path / "a.sql.gz"
+        f.write_bytes(gzip.compress(b"-- dump\nSELECT 1;\n"))
+        statuses = {c.name: c.status for c in check_sql(f)}
+        assert statuses["gzip"] == "skip"
+        assert statuses["content"] == "ok"
+
+    def test_deep_validates_the_gzip_crc(self, tmp_path):
+        f = tmp_path / "a.sql.gz"
+        f.write_bytes(gzip.compress(b"-- dump\nSELECT 1;\n"))
+        assert any(c.status == "ok" and "uncompressed" in c.detail for c in check_sql(f, deep=True))
+
+    def test_truncated_gzip_fails_in_deep_mode(self, tmp_path):
         f = tmp_path / "a.sql.gz"
         f.write_bytes(gzip.compress(b"SELECT 1;\n")[:-5])  # chop the CRC/ISIZE tail
-        statuses = {c.name: c.status for c in check_sql(f)}
-        assert statuses.get("decompress") == "fail" or statuses.get("gzip") == "fail"
+        assert any(c.status == "fail" for c in check_sql(f, deep=True))
+
+    def test_truncated_gzip_fails_even_from_the_header(self, tmp_path):
+        # A payload cut mid-stream breaks the header probe too, so the default
+        # (non-deep) pass still catches gross truncation.
+        f = tmp_path / "a.sql.gz"
+        raw = gzip.compress(b"SELECT 1;\n" * 100)
+        f.write_bytes(raw[: len(raw) // 2])
+        assert any(c.status == "fail" for c in check_sql(f))
 
     def test_garbage_payload_fails(self, tmp_path):
         f = _touch(tmp_path / "a.sql.gz", b"\x1f\x8b\x08\x00" + b"garbage" * 40)
@@ -85,11 +104,28 @@ class TestCheckSql:
 
 
 class TestCheckZip:
-    def test_valid_archive_ok(self, tmp_path):
+    def test_valid_archive_skips_crc_by_default(self, tmp_path):
         f = tmp_path / "a.zip"
         with zipfile.ZipFile(f, "w") as zf:
             zf.writestr("dump.sql", "SELECT 1;\n")
-        assert all(c.status == "ok" for c in check_zip(f))
+        statuses = {c.name: c.status for c in check_zip(f)}
+        assert statuses["readable"] == "ok"
+        assert statuses["crc"] == "skip"
+
+    def test_deep_verifies_every_entry(self, tmp_path):
+        f = tmp_path / "a.zip"
+        with zipfile.ZipFile(f, "w") as zf:
+            zf.writestr("dump.sql", "SELECT 1;\n")
+        assert all(c.status == "ok" for c in check_zip(f, deep=True))
+
+    def test_deep_detects_corrupt_entry(self, tmp_path):
+        f = tmp_path / "a.zip"
+        with zipfile.ZipFile(f, "w") as zf:
+            zf.writestr("dump.sql", "SELECT 1;\n" * 500)
+        raw = bytearray(f.read_bytes())
+        raw[len(raw) // 2] ^= 0xFF  # flip a byte inside the compressed payload
+        f.write_bytes(bytes(raw))
+        assert any(c.status == "fail" for c in check_zip(f, deep=True))
 
     def test_empty_archive_fails(self, tmp_path):
         f = tmp_path / "a.zip"
