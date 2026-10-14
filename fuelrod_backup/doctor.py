@@ -14,6 +14,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from .config import Config
+from .notify import EXIT_FAILURE, EXIT_OK, notify
 from .output import emit, json_enabled, register
 
 console = register(Console())
@@ -387,6 +388,14 @@ def run_doctor(cfg: Config, *, skip_connection: bool = False) -> int:
     for d in report.failures + report.warnings:
         if d.hint:
             console.print(f"  {_STATUS_ICON[d.status]} [bold]{d.name}:[/] {d.hint}")
+
+    notify(
+        status="failure" if report.failures else "success",
+        command="doctor",
+        cfg=cfg,
+        summary=f"{len(report.failures)} failed, {len(report.warnings)} warning(s)",
+        exit_code=EXIT_FAILURE if report.failures else EXIT_OK,
+    )
 
     console.print()
     ok = len(report.checks) - len(report.failures) - len(report.warnings)

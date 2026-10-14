@@ -20,6 +20,7 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeEl
 from rich.table import Column, Table
 
 from .config import Config
+from .notify import EXIT_OK, EXIT_VERIFY_FAILED, notify, report_delivery_errors
 from .output import emit, json_enabled, register
 
 console = register(Console())
@@ -469,7 +470,7 @@ def run_verify(
                 for r in results
             ],
         })
-        return 1 if failed else 0
+        return _finish(engine_cfg, results, failed, quiet=True)
 
     table = Table(show_header=True, header_style="bold")
     table.add_column("", width=3)
@@ -495,7 +496,29 @@ def run_verify(
                 if c.status == "fail":
                     console.print(f"  [red]✗[/] {r.path.name} → {c.name}: {c.detail}")
         console.print()
-    return 1 if failed else 0
+    return _finish(engine_cfg, results, failed, quiet=False)
+
+
+def _finish(
+    cfg: Config | None,
+    results: list[ArtifactResult],
+    failed: list[ArtifactResult],
+    *,
+    quiet: bool,
+) -> int:
+    """Send the outcome notification and map it to the exit-code contract."""
+    status = "failure" if failed else "success"
+    summary = f"{len(results) - len(failed)}/{len(results)} artifact(s) verified"
+    errors = notify(
+        status=status,
+        command="verify",
+        cfg=cfg,
+        summary=summary,
+        exit_code=EXIT_VERIFY_FAILED if failed else EXIT_OK,
+    )
+    if errors and not quiet:
+        report_delivery_errors(errors, console)
+    return EXIT_VERIFY_FAILED if failed else EXIT_OK
 
 
 def _count_checks(results: list[ArtifactResult]) -> dict[str, int]:

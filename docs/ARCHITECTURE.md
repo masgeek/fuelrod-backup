@@ -13,6 +13,7 @@
 | `doctor.py` | Pre-flight diagnostics for config, tools, disk and connectivity |
 | `output.py` | JSON output mode — silences Rich consoles, emits one document |
 | `crypto.py` | Encryption at rest (age/gpg) with temp-plaintext lifecycle |
+| `notify.py` | Webhook/command notifications and the shared exit-code contract |
 | `runner.py` | PostgreSQL native + subprocess operations (psycopg3) |
 | `drop.py` | Interactive database/schema drop |
 | `n8n_backup.py` | Hot Docker volume snapshots for n8n |
@@ -125,6 +126,20 @@ Key migration behaviours:
 - Foreign keys appended with `DEFERRABLE INITIALLY DEFERRED`
 - Tables with > 1 million rows bypass the thread pool and run sequentially
 - Skipped rows written to `<db>_skipped_rows.jsonl`
+
+## Notification Flow
+
+`notify.notify()` is the single entry point. `NOTIFY_ON` selects events (`success` / `failure` /
+`all`); `NOTIFY_URL` receives a JSON POST (scheme-restricted to http/https) and
+`NOTIFY_HOOK_SUCCESS` / `NOTIFY_HOOK_FAILURE` are command templates with `{status}` / `{command}` /
+`{exit_code}` / `{summary}` placeholders, executed list-form with a minimal env and a hard timeout.
+Every failure mode — unreachable endpoint, HTTP error, timeout, bad template, missing binary — is
+returned as a warning string and never raises, so a notification outage cannot fail a backup that
+succeeded.
+
+Exit codes live in `notify.py` and are the contract automation scripts read: 0 ok, 1 operational
+failure, 2 usage, 3 verification failed, 4 aborted by the operator. Declining a confirmation or
+pressing Ctrl+C exits 4, not 0.
 
 ## Encryption Flow
 

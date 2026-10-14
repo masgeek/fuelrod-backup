@@ -14,6 +14,7 @@ from rich.table import Table
 
 from . import prompt as questionary
 from .config import Config
+from .notify import EXIT_ABORTED
 from .output import register
 
 console = register(Console())
@@ -296,7 +297,7 @@ def run_n8n_backup(
 
         if not questionary.confirm("Proceed with backup?", default=True).ask():
             console.print("[yellow]Aborted by user.[/]")
-            sys.exit(0)
+            sys.exit(EXIT_ABORTED)
 
     for service in active_services:
         _backup_service(service, cfg)

@@ -243,10 +243,12 @@ class TestRunVerify:
         _touch(tmp_path / "p" / "mariadb" / "app" / "a.sql", b"-- dump\nSELECT 1;\n")
         assert run_verify(_cfg(tmp_path)) == 0
 
-    def test_one_when_something_fails(self, tmp_path):
+    def test_three_when_something_fails(self, tmp_path):
+        # 3 = EXIT_VERIFY_FAILED, so automation can tell a broken artifact from
+        # an operational error (1).
         _touch(tmp_path / "p" / "mariadb" / "app" / "a.sql", b"-- dump\nSELECT 1;\n")
         _touch(tmp_path / "p" / "mariadb" / "app" / "b.zip", b"PK\x03\x04 broken")
-        assert run_verify(_cfg(tmp_path)) == 1
+        assert run_verify(_cfg(tmp_path)) == 3
 
     def test_empty_base_is_not_a_failure(self, tmp_path):
         tmp_path.mkdir(exist_ok=True)

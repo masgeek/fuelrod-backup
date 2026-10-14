@@ -13,6 +13,7 @@ from . import prompt as questionary
 from .adapters import get_adapter
 from .adapters.base import DbAdapter
 from .config import Config
+from .notify import EXIT_ABORTED
 from .output import register
 
 console = register(Console())
@@ -114,7 +115,7 @@ def _create_database(cfg: Config, adapter: DbAdapter) -> None:
     console.print(f"  [bold]Database:[/] [cyan]{db_name}[/] will be created.")
     if not questionary.confirm("Create this database?", default=True).ask():
         console.print("[yellow]Aborted.[/]")
-        sys.exit(0)
+        sys.exit(EXIT_ABORTED)
 
     # Execute
     console.print()
@@ -184,7 +185,7 @@ def _create_schema(cfg: Config, adapter: DbAdapter) -> None:
     console.print(f"  [bold]Schema:[/] [cyan]{schema_name}[/] in database [cyan]{db_name}[/] will be created.")
     if not questionary.confirm("Create this schema?", default=True).ask():
         console.print("[yellow]Aborted.[/]")
-        sys.exit(0)
+        sys.exit(EXIT_ABORTED)
 
     # Execute
     console.print()

@@ -22,6 +22,7 @@ from .adapters import get_adapter
 from .adapters.base import DbAdapter
 from .config import Config
 from .crypto import CryptoError, encrypt_file, validate_config
+from .notify import EXIT_ABORTED, EXIT_OK, notify, report_delivery_errors
 from .output import emit, json_enabled, register
 
 console = register(Console())
@@ -30,6 +31,25 @@ console = register(Console())
 # ──────────────────────────────────────────────────────────────────────────────
 #  Helpers
 # ──────────────────────────────────────────────────────────────────────────────
+
+def _notify_finished(cfg: Config, command: str, dumped: list[dict]) -> None:
+    """Send the success notification; delivery problems are warnings only."""
+    changed = [d for d in dumped if d.get("status") == "ok"]
+    summary = (
+        f"{len(changed)} database(s) backed up"
+        if not any(d.get("status") == "unchanged" for d in dumped)
+        else f"{len(changed)} dumped, "
+             f"{sum(1 for d in dumped if d.get('status') == 'unchanged')} unchanged"
+    )
+    errors = notify(
+        status="success",
+        command=command,
+        cfg=cfg,
+        summary=summary,
+        exit_code=EXIT_OK,
+    )
+    report_delivery_errors(errors, console)
+
 
 def _section(title: str) -> None:
     console.print()
@@ -457,7 +477,7 @@ def run_backup(
 
         if not questionary.confirm("Proceed with backup?", default=True).ask():
             console.print("[yellow]Aborted by user.[/]")
-            sys.exit(0)
+            sys.exit(EXIT_ABORTED)
 
         dbs_to_backup = selected_dbs
     else:
@@ -526,7 +546,10 @@ def run_backup(
             "keep_days": cfg.days_to_keep,
             "databases": dumped,
         })
+        _notify_finished(cfg, "backup", dumped)
         return
+
+    _notify_finished(cfg, "backup", dumped)
 
     console.print()
     console.print(Panel("[bold green]BACKUP COMPLETE[/]", expand=False))

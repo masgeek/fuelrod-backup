@@ -280,6 +280,37 @@ Upload backup files to Google Drive via rclone, with optional age-based remote p
 - `--keep-local` — skip local file deletion after upload
 - `--config, -c PATH`
 
+## Notifications
+
+Set `NOTIFY_ON` to `success`, `failure` or `all`, plus at least one destination:
+
+```bash
+NOTIFY_ON=failure
+NOTIFY_URL=https://hooks.example.com/fuelrod
+NOTIFY_HOOK_FAILURE=/usr/local/bin/backup-alert {status} {command} --summary "{summary}"
+```
+
+- The webhook receives one JSON POST (`command`, `status`, `summary`, `exit_code`, `engine`, `base_dir`).
+  Only `http`/`https` are accepted.
+- Hooks are command templates; `{status}`, `{command}`, `{exit_code}`, `{summary}` and scalar payload
+  keys are substituted, and `FUELROD_STATUS` / `FUELROD_COMMAND` / `FUELROD_EXIT_CODE` are exported.
+- Notification delivery is best-effort: a failed webhook or hook prints a warning and never changes
+  the exit code of the run that triggered it.
+- Wired into `backup`, `restore`, `verify` and `doctor`.
+
+## Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | success |
+| `1` | operational failure (connection refused, dump failed, bad config) |
+| `2` | usage error (missing or unknown option) |
+| `3` | `verify` found a broken artifact |
+| `4` | aborted by the operator (declined confirmation, Ctrl+C) |
+
+An operator abort is **not** success: it exits `4`, so automation can tell "nothing was done
+because a human said no" from "everything worked".
+
 ## Machine-readable output
 
 `--json` is accepted globally and per command (`fuelrod-backup --json verify`, `fuelrod-backup
@@ -338,6 +369,11 @@ DB_PORT=
 | `ENCRYPT_RECIPIENT` | age public key (`age1…`) or gpg recipient key |
 | `ENCRYPT_IDENTITY_FILE` | age private key file, needed to restore encrypted backups |
 | `ENCRYPT_PASSPHRASE_FILE` | passphrase file for symmetric gpg (never pass a passphrase on the CLI) |
+| `NOTIFY_ON` | `success` / `failure` / `all` — which events notify |
+| `NOTIFY_URL` | webhook endpoint receiving a JSON POST |
+| `NOTIFY_HOOK_SUCCESS` | command run on success, e.g. `/bin/notify {status} {command}` |
+| `NOTIFY_HOOK_FAILURE` | command run on failure |
+| `NOTIFY_TIMEOUT` | webhook/hook timeout in seconds (default 15) |
 | `KEEP_DAYS` | retention days (`0` = keep forever) |
 | `CONNECTION_TIMEOUT` | connection timeout in seconds |
 

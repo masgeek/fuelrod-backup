@@ -48,6 +48,12 @@ class Config:
     encrypt_recipient: str = ""
     encrypt_identity_file: str = ""
     encrypt_passphrase_file: str = ""
+    # Notifications (webhook and/or command hooks)
+    notify_on: str = ""            # NOTIFY_ON — success | failure | all
+    notify_url: str = ""           # NOTIFY_URL — webhook endpoint
+    notify_timeout: int = 15       # NOTIFY_TIMEOUT
+    notify_hook_success: str = ""  # NOTIFY_HOOK_SUCCESS — command template
+    notify_hook_failure: str = ""  # NOTIFY_HOOK_FAILURE — command template
     connection_timeout: int = 30  # seconds; applies to driver connect + docker subprocess checks
     # n8n volume backup
     n8n_services: list[str] = field(default_factory=lambda: ["n8n"])
@@ -130,6 +136,18 @@ def _load_encryption(cfg: Config, get) -> None:
     cfg.encrypt_recipient = get("ENCRYPT_RECIPIENT", "").strip()
     cfg.encrypt_identity_file = get("ENCRYPT_IDENTITY_FILE", "").strip()
     cfg.encrypt_passphrase_file = get("ENCRYPT_PASSPHRASE_FILE", "").strip()
+
+
+def _load_notifications(cfg: Config, get) -> None:
+    """Parse notification settings from any lookup callable."""
+    cfg.notify_on = get("NOTIFY_ON", "").strip()
+    cfg.notify_url = get("NOTIFY_URL", "").strip()
+    cfg.notify_hook_success = get("NOTIFY_HOOK_SUCCESS", "").strip()
+    cfg.notify_hook_failure = get("NOTIFY_HOOK_FAILURE", "").strip()
+    try:
+        cfg.notify_timeout = int(get("NOTIFY_TIMEOUT", "15"))
+    except ValueError:
+        cfg.notify_timeout = 15
 
 
 def user_config_dir() -> Path:
@@ -287,6 +305,7 @@ def load_config(config_file: Path | None = None, db_type_override: str | None = 
 
     _load_incremental(cfg, _get)
     _load_encryption(cfg, _get)
+    _load_notifications(cfg, _get)
 
     # n8n volume backup
     raw_n8n = _get("N8N_SERVICES", "n8n").strip()
@@ -341,6 +360,7 @@ def _load_prefixed_config(
         cfg.days_to_keep = 7
     _load_incremental(cfg, _get)
     _load_encryption(cfg, _get)
+    _load_notifications(cfg, _get)
     try:
         cfg.connection_timeout = int(_get("CONNECTION_TIMEOUT", "30"))
     except ValueError:

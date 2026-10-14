@@ -7,6 +7,7 @@ import pytest
 from fuelrod_backup import drop as drop_mod
 from fuelrod_backup.adapters.mssql import MssqlAdapter
 from fuelrod_backup.config import Config, DbType
+from fuelrod_backup.notify import EXIT_ABORTED
 
 
 @pytest.fixture()
@@ -84,7 +85,7 @@ class TestDisconnectDatabase:
         monkeypatch.setattr(drop_mod.questionary, "text", lambda *a, **k: MagicMock(ask=lambda: "typo"))
         with pytest.raises(SystemExit) as exc:
             drop_mod._disconnect_database(cfg, adapter, db_name="app_db")
-        assert exc.value.code == 0
+        assert exc.value.code == EXIT_ABORTED  # an operator abort is not success
         adapter.terminate_connections.assert_not_called()
 
     def test_kill_failure_is_reported(self, cfg, adapter, monkeypatch):

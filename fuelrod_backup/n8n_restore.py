@@ -16,6 +16,7 @@ from rich.table import Table
 
 from . import prompt as questionary
 from .config import Config
+from .notify import EXIT_ABORTED
 from .output import register
 
 console = register(Console())
@@ -234,7 +235,7 @@ def _confirm_restore(
 
     if not questionary.confirm("Proceed with restore?", default=False).ask():
         console.print("[yellow]Aborted by user.[/]")
-        sys.exit(0)
+        sys.exit(EXIT_ABORTED)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

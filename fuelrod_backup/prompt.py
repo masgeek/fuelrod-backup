@@ -19,6 +19,8 @@ import questionary as _q
 from rich.console import Console
 from rich.text import Text
 
+from .notify import EXIT_ABORTED
+
 _console = Console()
 
 
@@ -32,7 +34,7 @@ class _GuardedQuestion:
         result = self._q.ask(**kwargs)
         if result is None:
             _console.print("\n[yellow]Aborted.[/]")
-            sys.exit(0)
+            sys.exit(EXIT_ABORTED)
         return result
 
 

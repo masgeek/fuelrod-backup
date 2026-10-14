@@ -21,6 +21,7 @@ from .adapters import get_adapter
 from .adapters.base import DbAdapter
 from .config import Config
 from .crypto import CryptoError, decrypt_if_needed, is_encrypted
+from .notify import EXIT_ABORTED, EXIT_OK, notify, report_delivery_errors
 from .output import emit, json_enabled, register
 
 console = register(Console())
@@ -766,6 +767,8 @@ def _perform_restore(
             label = f"{schema} → {effective}" if schema in schema_remap else schema
             console.print(f"    {label:<36} {cnt} tables")
 
+    _notify_finished(cfg, backup_file, target_db)
+
     if json_enabled():
         emit({
             "command": "restore", "status": "ok", "engine": cfg.db_type.value,
@@ -946,7 +949,7 @@ def run_restore(
 
     if not questionary.confirm("Proceed with restore? This may be destructive.", default=True).ask():
         console.print("[yellow]Aborted by user.[/]")
-        sys.exit(0)
+        sys.exit(EXIT_ABORTED)
 
     _perform_restore(
         cfg,
@@ -1144,6 +1147,18 @@ def _target_exists(adapter: DbAdapter, target: str) -> bool:
         return adapter.db_exists(target)
     except Exception:  # noqa: BLE001 — plan output must not abort the run
         return False
+
+
+def _notify_finished(cfg: Config, backup_file: Path, target_db: str) -> None:
+    """Send the success notification; delivery problems are warnings only."""
+    errors = notify(
+        status="success",
+        command="restore",
+        cfg=cfg,
+        summary=f"{backup_file.name} → {target_db}",
+        exit_code=EXIT_OK,
+    )
+    report_delivery_errors(errors, console)
 
 
 def _decrypt_for_restore(backup_file: Path, cfg: Config) -> Path:

@@ -13,6 +13,7 @@ from . import prompt as questionary
 from .adapters import get_adapter
 from .adapters.base import DbAdapter
 from .config import Config
+from .notify import EXIT_ABORTED
 from .output import emit, json_enabled, register
 
 console = register(Console())
@@ -147,7 +148,7 @@ def _disconnect_database(cfg: Config, adapter: DbAdapter, db_name: str | None = 
     typed = questionary.text(f'  Type "[bold]{target}[/]" to confirm:').ask() or ""
     if typed.strip() != target:
         console.print("[yellow]Name did not match — aborted.[/]")
-        sys.exit(0)
+        sys.exit(EXIT_ABORTED)
 
     console.print()
     try:
@@ -234,7 +235,7 @@ def _drop_database(cfg: Config, adapter: DbAdapter) -> None:
     typed = questionary.text(f'  Type "[bold]{db_name}[/]" to confirm:').ask() or ""
     if typed.strip() != db_name:
         console.print("[yellow]Name did not match — aborted.[/]")
-        sys.exit(0)
+        sys.exit(EXIT_ABORTED)
 
     # Execute
     console.print()
@@ -328,7 +329,7 @@ def _drop_schema(cfg: Config, adapter: DbAdapter) -> None:
     typed = questionary.text(f'  Type "[bold]{schema_name}[/]" to confirm:').ask() or ""
     if typed.strip() != schema_name:
         console.print("[yellow]Name did not match — aborted.[/]")
-        sys.exit(0)
+        sys.exit(EXIT_ABORTED)
 
     # Execute
     console.print()
