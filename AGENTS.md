@@ -7,7 +7,7 @@ Python 3.13+, Poetry-managed CLI (`fuelrod-backup` / short alias `fr-bkp`).
 ```bash
 poetry install                      # virtualenvs live in ./.venv (poetry.toml)
 poetry run ruff check .             # lint — CI gate, must pass first
-poetry run pytest -q                # 212 fast unit tests, no DB/docker required
+poetry run pytest -q                # 413 fast unit tests, no DB/docker/network required
 poetry run pytest tests/test_migrate_types.py -q   # single file
 poetry run pytest -k toc -q                        # single test by name
 poetry run fuelrod-backup --help                   # CI smoke-tests the entry point
@@ -22,6 +22,9 @@ No mypy/format tooling — ruff only. CI (`.github/workflows/pr-checks.yml`) run
 - `adapters/` holds the engine implementations behind `DbAdapter` (`adapters/base.py`), selected by `adapters/__init__.py::get_adapter(cfg)`. **Add new engine capabilities as capability flags (`supports_schemas`, `supports_roles`, `supports_toc`, `supports_schema_drop`, `dump_extension`), not `if db_type == ...` branches** — wizards read those flags to decide which options to show.
 - `runner.py::PgRunner` is the PostgreSQL workhorse: psycopg3 for all queries/admin ops, subprocess **only** for `pg_dump` / `pg_restore` / `docker cp`. `psql` is not used.
 - `migrate/` is a self-contained MariaDB→PostgreSQL pipeline (types → transform → schema → data → validate → report); `__init__.py::run_migrate()` is the public entry.
+- `verify.py` / `doctor.py` / `crypto.py` / `storage.py` / `notify.py` / `output.py` are cross-cutting: verify + doctor gate automation, crypto does encryption at rest, storage does off-site sync, notify owns the exit-code contract, output owns `--json`.
+- `--json` works because every module console is built as `register(Console())` (`output.py`), which lets `enable_json()` null them all. A module that prints outside its JSON payload must write to **stderr** or it corrupts stdout parsing.
+- Off-site sync shells out to the `rclone` **binary** (`storage.py`), not the `rclone-python` package — that distribution installs its module as `rclone_python`, and its API builds shell strings.
 
 ## Hard rules
 
@@ -36,6 +39,7 @@ No mypy/format tooling — ruff only. CI (`.github/workflows/pr-checks.yml`) run
 - Single-engine mode uses engine-agnostic `DB_*` keys only. The `PG_*` / `MY_*` / `MS_*` prefixed keys apply **only** to multi-engine mode (`--all-engines`, `load_all_configs()`). Legacy `PG_USERNAME` etc. are ignored in single-engine mode.
 - The repo has a real `.backup` at the root (gitignored) that the CLI will auto-discover during local runs — it can affect manual smoke tests.
 - Tests use the `clean_env` / `no_config_console` fixtures in `tests/conftest.py`; new config tests must use `clean_env` so the developer's own env vars don't leak into assertions.
+- Exit codes are a contract (`notify.py`): 0 ok, 1 operational failure, 2 usage, 3 verify failed, 4 **operator abort**. `sys.exit(0)` on a declined confirmation is a bug — declining is not success.
 
 ## Git / workflow
 
