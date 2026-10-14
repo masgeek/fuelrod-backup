@@ -22,8 +22,8 @@ from .adapters import get_adapter
 from .adapters.base import DbAdapter
 from .config import Config
 from .crypto import CryptoError, encrypt_file, validate_config
-from .notify import EXIT_ABORTED, EXIT_OK, notify, report_delivery_errors
-from .output import emit, json_enabled, register
+from .notify import EXIT_ABORTED, EXIT_FAILURE, EXIT_OK, notify, report_delivery_errors
+from .output import emit, error, json_enabled, register
 
 console = register(Console())
 
@@ -58,6 +58,9 @@ def _section(title: str) -> None:
 
 
 def _die(msg: str) -> None:
+    if json_enabled():
+        error(msg)
+        sys.exit(EXIT_FAILURE)
     console.print(f"[bold red]ERROR:[/] {msg}")
     sys.exit(1)
 

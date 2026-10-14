@@ -20,8 +20,8 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeEl
 from rich.table import Column, Table
 
 from .config import Config
-from .notify import EXIT_OK, EXIT_VERIFY_FAILED, notify, report_delivery_errors
-from .output import emit, json_enabled, register
+from .notify import EXIT_FAILURE, EXIT_OK, EXIT_VERIFY_FAILED, notify, report_delivery_errors
+from .output import emit, error, json_enabled, register
 
 console = register(Console())
 
@@ -43,6 +43,9 @@ _STATUS_ICON = {"ok": "[green]✓[/]", "warn": "[yellow]![/]", "fail": "[red]✗
 
 
 def _die(msg: str) -> None:
+    if json_enabled():
+        error(msg)
+        sys.exit(EXIT_FAILURE)
     console.print(f"[bold red]ERROR:[/] {msg}")
     sys.exit(1)
 

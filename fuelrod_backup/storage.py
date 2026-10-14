@@ -27,7 +27,7 @@ from rich.table import Column, Table
 
 from .config import Config
 from .notify import EXIT_FAILURE, EXIT_OK
-from .output import emit, json_enabled, register
+from .output import emit, error, json_enabled, register
 
 console = register(Console())
 
@@ -73,6 +73,9 @@ def _section(title: str) -> None:
 
 
 def _die(msg: str) -> None:
+    if json_enabled():
+        error(msg)
+        sys.exit(EXIT_FAILURE)
     console.print(f"[bold red]ERROR:[/] {msg}")
     sys.exit(EXIT_FAILURE)
 

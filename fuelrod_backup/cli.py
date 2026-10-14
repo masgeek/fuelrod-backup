@@ -12,7 +12,8 @@ from rich.console import Console
 from rich.panel import Panel
 
 from .config import DbType, load_all_configs, load_config
-from .output import enable_json, json_enabled, register
+from .notify import EXIT_FAILURE, EXIT_USAGE
+from .output import enable_json, error, json_enabled, register
 
 _VERSION = _pkg_version("fuelrod-backup")
 
@@ -88,9 +89,18 @@ def _apply_docker_override(cfg, use_docker: bool | None) -> None:
         cfg.use_docker = use_docker
 
 
+def _fail(msg: str, code: int) -> None:
+    """Report a fatal message on stderr and exit with the contract's code."""
+    if json_enabled():
+        error(msg)
+    else:
+        console.print(f"[bold red]ERROR:[/] {msg}")
+    raise typer.Exit(code=code)
+
+
 def _validate_db_type(db_type: str | None) -> None:
     if db_type is not None and db_type.lower() not in (e.value for e in DbType):
-        console.print(f"[bold red]ERROR:[/] Unknown --db-type '{db_type}'. Choose: postgres, mariadb, mssql")
+        _fail(f"Unknown --db-type '{db_type}'. Choose: postgres, mariadb, mssql", EXIT_USAGE)
         raise typer.Exit(code=1)
 
 
@@ -264,11 +274,9 @@ def restore(
 
     if not databases:
         if no_interactive:
-            console.print("[bold red]ERROR:[/] --db is required with --no-interactive.")
-            raise typer.Exit(code=2)
+            _fail("--db is required with --no-interactive.", EXIT_USAGE)
     elif len(databases) > 1 and not no_interactive:
-        console.print("[bold red]ERROR:[/] Interactive restore handles one database at a time.")
-        raise typer.Exit(code=2)
+        _fail("Interactive restore handles one database at a time.", EXIT_USAGE)
 
     cfg = load_config(config_file, db_type_override=db_type)
     _apply_docker_override(cfg, use_docker)
@@ -428,6 +436,7 @@ def drop(
 
 @app.command("create")
 def create(
+        as_json: Annotated[bool, _JSON_OPT] = False,
         use_docker: Annotated[bool | None, _DOCKER_OPT] = None,
         db_type: Annotated[str | None, _DB_TYPE_OPT] = None,
         config_file: Annotated[Path | None, _CONFIG_OPT] = None,
@@ -439,6 +448,7 @@ def create(
     """
     from .create import run_create
 
+    _enable_json(as_json)
     _validate_db_type(db_type)
     cfg = load_config(config_file, db_type_override=db_type)
     _apply_docker_override(cfg, use_docker)
@@ -953,11 +963,13 @@ def n8n_backup_cmd(
             list[str],
             typer.Option("--service", "-s", help="Service(s) to back up (repeatable). Default: all."),
         ] = [],
+        as_json: Annotated[bool, _JSON_OPT] = False,
         config_file: Annotated[Path | None, _CONFIG_OPT] = None,
 ) -> None:
     """Back up n8n Docker volumes (hot snapshot, no downtime)."""
     from .n8n_backup import run_n8n_backup
 
+    _enable_json(as_json)
     cfg = load_config(config_file)
     run_n8n_backup(cfg, interactive=not no_interactive, services=list(services) or None)
 
@@ -980,11 +992,13 @@ def n8n_restore_cmd(
             bool,
             typer.Option("--verbose", "-v", help="Print detailed step logs."),
         ] = False,
+        as_json: Annotated[bool, _JSON_OPT] = False,
         config_file: Annotated[Path | None, _CONFIG_OPT] = None,
 ) -> None:
     """Restore an n8n Docker volume from a backup archive."""
     from .n8n_restore import run_n8n_restore
 
+    _enable_json(as_json)
     cfg = load_config(config_file)
     run_n8n_restore(cfg, service=service, backup_file=backup_file, dry_run=dry_run, verbose=verbose)
 
@@ -1166,17 +1180,17 @@ def migrate(
     dst_cfgs = [c for c in all_cfgs if c.db_type == DbType.POSTGRES]
 
     if not src_cfgs:
-        console.print(
-            "[bold red]ERROR:[/] No MariaDB source config found. "
-            "Set MY_USERNAME and MY_HOST in .backup (multi-engine mode)."
+        _fail(
+            "No MariaDB source config found. "
+            "Set MY_USERNAME and MY_HOST in .backup (multi-engine mode).",
+            EXIT_FAILURE,
         )
-        raise typer.Exit(code=1)
     if not dst_cfgs:
-        console.print(
-            "[bold red]ERROR:[/] No PostgreSQL target config found. "
-            "Set PG_USERNAME and PG_HOST in .backup (multi-engine mode)."
+        _fail(
+            "No PostgreSQL target config found. "
+            "Set PG_USERNAME and PG_HOST in .backup (multi-engine mode).",
+            EXIT_FAILURE,
         )
-        raise typer.Exit(code=1)
 
     run_migrate(
         src_cfg=src_cfgs[0],

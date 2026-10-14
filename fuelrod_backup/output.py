@@ -61,3 +61,14 @@ def json_enabled() -> bool:
 def emit(payload: dict[str, Any]) -> None:
     """Write one JSON document to stdout."""
     print(json.dumps(payload, indent=2, default=str))
+
+
+def error(message: str) -> None:
+    """
+    Report a fatal message.
+
+    In JSON mode every Rich console is nulled, so errors raised through a
+    module console would disappear entirely. They always go to stderr, which
+    keeps stdout reserved for the single JSON document.
+    """
+    print(f"ERROR: {message}", file=sys.stderr)
