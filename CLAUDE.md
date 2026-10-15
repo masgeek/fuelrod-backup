@@ -56,7 +56,7 @@ Main commands:
 - `drop` — interactive database or schema drop with connection termination and confirmation
 - `migrate` — MariaDB → PostgreSQL migration (schema, data, validation, report)
 - `n8n-backup` / `n8n-restore` — hot Docker volume snapshots
-- `gdrive-sync` — upload backups to Google Drive via rclone
+- `sync` — upload backups to any rclone remote (e.g. S3) and prune old files
 
 ### PostgreSQL-Specific Details
 
@@ -87,7 +87,7 @@ S608 (SQL injection lint warning) is suppressed with `# noqa: S608` at each spec
 ### n8n and Google Drive
 
 - `n8n_backup.py` / `n8n_restore.py` — Docker volume tar.gz snapshots, no container downtime required
-- `gdrive_sync.py` — wraps `rclone-python` library; uses glob include patterns and age-based pruning
+- `storage.py` — generalizes off-site sync to any rclone backend; supports S3 credentials in config
 
 ## Key Dependencies
 
@@ -119,4 +119,4 @@ Engine-specific: `PG_DUMP_CMD`, `PG_RESTORE_CMD`, `PG_CMD`, `MYSQL_DUMP_CMD`, `M
 
 ## Feature Roadmap
 
-See `docs/FEATURE_PLAN.md` and `docs/FEATURE_CHECKLIST.md` for the prioritized roadmap. Shipped features (backup, restore, drop, migrate, n8n, gdrive-sync) are tracked there. Planned work includes non-interactive restore, structured logging, `doctor` command, and S3 storage backends.
+See `docs/FEATURE_PLAN.md` and `docs/FEATURE_CHECKLIST.md` for the prioritized roadmap. Shipped features (backup, restore, drop, migrate, n8n, sync) are tracked there. Planned work includes non-interactive restore, structured logging, `doctor` command, and S3 storage backends.
