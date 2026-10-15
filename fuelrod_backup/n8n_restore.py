@@ -16,8 +16,10 @@ from rich.table import Table
 
 from . import prompt as questionary
 from .config import Config
+from .notify import EXIT_ABORTED, EXIT_FAILURE
+from .output import emit, error, json_enabled, register
 
-console = Console()
+console = register(Console())
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -31,6 +33,9 @@ def _section(title: str) -> None:
 
 
 def _die(msg: str) -> None:
+    if json_enabled():
+        error(msg)
+        sys.exit(EXIT_FAILURE)
     console.print(f"[bold red]ERROR:[/] {msg}")
     sys.exit(1)
 
@@ -233,7 +238,7 @@ def _confirm_restore(
 
     if not questionary.confirm("Proceed with restore?", default=False).ask():
         console.print("[yellow]Aborted by user.[/]")
-        sys.exit(0)
+        sys.exit(EXIT_ABORTED)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -418,15 +423,23 @@ def run_n8n_restore(
         dry_run:     Show plan only — no changes made.
         verbose:     Print detailed step logs.
     """
-    console.print(Panel("[bold cyan]n8n Volume Restore[/]", expand=False))
+    if json_enabled() and (service is None or backup_file is None):
+        # The wizard prompts are suppressed in JSON mode, so the target has to
+        # be explicit rather than silently falling through to an unanswerable
+        # question.
+        _die("--service and --file are both required with --json (no wizard to select them).")
+
+    if not json_enabled():
+        console.print(Panel("[bold cyan]n8n Volume Restore[/]", expand=False))
 
     # Step 1 — Select service
     if service is not None:
         _validate_service(service)
         volume_name = f"{service}-data"
         service_backup_dir = Path(cfg.base_dir) / "n8n" / service
-        console.print(f"  Service : [bold]{service}[/]")
-        console.print(f"  Volume  : [bold]{volume_name}[/]")
+        if not json_enabled():
+            console.print(f"  Service : [bold]{service}[/]")
+            console.print(f"  Volume  : [bold]{volume_name}[/]")
     else:
         service, volume_name, service_backup_dir = _select_service(cfg)
 
@@ -434,7 +447,8 @@ def run_n8n_restore(
     if backup_file is not None:
         if not backup_file.exists():
             _die(f"Backup file not found: {backup_file}")
-        console.print(f"  Backup file: [bold]{backup_file.name}[/]  ([dim]{_human_size(backup_file)}[/])")
+        if not json_enabled():
+            console.print(f"  Backup file: [bold]{backup_file.name}[/]  ([dim]{_human_size(backup_file)}[/])")
     else:
         backup_file = _select_backup_file(service_backup_dir, service)
 
@@ -442,9 +456,20 @@ def run_n8n_restore(
     _confirm_restore(service, volume_name, backup_file, dry_run)
 
     # Step 4 — Execute (or dry run)
-    _section("Step 4 — Execute Restore")
+    if not json_enabled():
+        _section("Step 4 — Execute Restore")
 
     if dry_run:
+        if json_enabled():
+            emit({
+                "command": "n8n-restore",
+                "status": "dry_run",
+                "service": service,
+                "volume": volume_name,
+                "backup_file": str(backup_file),
+                "executed": False,
+            })
+            return
         _dry_run_restore(service, volume_name, backup_file, service_backup_dir, verbose=verbose)
         return
 
@@ -462,6 +487,17 @@ def run_n8n_restore(
             f"Restore failed (exit {exc.returncode})."
             + (f"\n  stderr: {stderr}" if stderr else "")
         )
+
+    if json_enabled():
+        emit({
+            "command": "n8n-restore",
+            "status": "ok",
+            "service": service,
+            "volume": volume_name,
+            "backup_file": str(backup_file),
+            "executed": True,
+        })
+        return
 
     console.print()
     console.print(Panel("[bold green]n8n RESTORE COMPLETE[/]", expand=False))

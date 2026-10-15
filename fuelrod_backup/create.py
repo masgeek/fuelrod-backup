@@ -13,8 +13,10 @@ from . import prompt as questionary
 from .adapters import get_adapter
 from .adapters.base import DbAdapter
 from .config import Config
+from .notify import EXIT_ABORTED, EXIT_FAILURE
+from .output import emit, error, json_enabled, register
 
-console = Console()
+console = register(Console())
 
 
 def _section(title: str) -> None:
@@ -24,6 +26,9 @@ def _section(title: str) -> None:
 
 
 def _die(msg: str) -> None:
+    if json_enabled():
+        error(msg)
+        sys.exit(EXIT_FAILURE)
     console.print(f"[bold red]ERROR:[/] {msg}")
     sys.exit(1)
 
@@ -113,7 +118,7 @@ def _create_database(cfg: Config, adapter: DbAdapter) -> None:
     console.print(f"  [bold]Database:[/] [cyan]{db_name}[/] will be created.")
     if not questionary.confirm("Create this database?", default=True).ask():
         console.print("[yellow]Aborted.[/]")
-        sys.exit(0)
+        sys.exit(EXIT_ABORTED)
 
     # Execute
     console.print()
@@ -134,6 +139,16 @@ def _create_database(cfg: Config, adapter: DbAdapter) -> None:
         except Exception as exc:
             progress.update(task, description="[red]✗ Create failed[/]", total=1, completed=1)
             _die(f"Create failed: {exc}")
+
+    if json_enabled():
+        emit({
+            "command": "create",
+            "status": "ok",
+            "action": "database",
+            "engine": cfg.db_type.value,
+            "database": db_name,
+        })
+        return
 
     console.print()
     console.print(Panel(f"[bold green]DATABASE '{db_name}' CREATED[/]", expand=False))
@@ -183,7 +198,7 @@ def _create_schema(cfg: Config, adapter: DbAdapter) -> None:
     console.print(f"  [bold]Schema:[/] [cyan]{schema_name}[/] in database [cyan]{db_name}[/] will be created.")
     if not questionary.confirm("Create this schema?", default=True).ask():
         console.print("[yellow]Aborted.[/]")
-        sys.exit(0)
+        sys.exit(EXIT_ABORTED)
 
     # Execute
     console.print()
@@ -207,6 +222,17 @@ def _create_schema(cfg: Config, adapter: DbAdapter) -> None:
         except Exception as exc:
             progress.update(task, description="[red]✗ Create failed[/]", total=1, completed=1)
             _die(f"Create failed: {exc}")
+
+    if json_enabled():
+        emit({
+            "command": "create",
+            "status": "ok",
+            "action": "schema",
+            "engine": cfg.db_type.value,
+            "database": db_name,
+            "schema": schema_name,
+        })
+        return
 
     console.print()
     console.print(Panel(

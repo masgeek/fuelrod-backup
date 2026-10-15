@@ -12,7 +12,7 @@ Use this as the execution tracker. Items are ordered from highest to lowest reco
 - [x] Progress bars for backup and restore
 - [x] Interactive database and schema drop (`drop` command)
 - [x] n8n Docker volume backup and restore
-- [x] Google Drive sync via rclone (`gdrive-sync`)
+- [x] Off-site sync via rclone (`sync`)
 - [x] MariaDB → PostgreSQL migration (`migrate` command)
   - [x] Schema extraction via `information_schema`
   - [x] DDL transformation (15+ rewrite rules)
@@ -25,10 +25,10 @@ Use this as the execution tracker. Items are ordered from highest to lowest reco
 
 ## Planned
 
-- [ ] 1. Non-interactive restore mode
-- [ ] 2. Structured logs and machine-readable output
-- [ ] 3. Pre-flight checks command (`doctor`)
-- [ ] 4. Backup verification command (`verify`)
+- [x] 1. Non-interactive restore mode (`restore -n -p PROJECT -d DB [--file] [--yes]`)
+- [x] 2. Structured logs and machine-readable output (`--json`)
+- [x] 3. Pre-flight checks command (`doctor`)
+- [x] 4. Backup verification command (`verify`)
 - [ ] 5. Restore guardrails and policy mode
 - [ ] 6. Locking and concurrency controls
 - [ ] 7. Retention policy profiles
@@ -37,7 +37,7 @@ Use this as the execution tracker. Items are ordered from highest to lowest reco
 
 ## Optional Backlog
 
-- [ ] Incremental PostgreSQL backup strategy support
-- [ ] Encryption at rest for backup artifacts
+- [x] Incremental PostgreSQL backup strategy support (`INCREMENTAL=true` + `restore --incremental-chain`)
+- [x] Encryption at rest for backup artifacts (`ENCRYPT=true`, age/gpg)
 - [ ] Minimal web dashboard for backup catalog browsing
 - [ ] Pluggable adapter interface for additional engines

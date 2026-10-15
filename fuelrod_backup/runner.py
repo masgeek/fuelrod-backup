@@ -105,6 +105,23 @@ class PgRunner:
                 cur.execute(query, params)
                 return [str(row[0]) for row in cur.fetchall()]
 
+    def table_change_signature(self, dbname: str) -> dict[str, int]:
+        """
+        Per-table DML counter used to decide what an incremental dump needs.
+
+        Uses pg_stat_user_tables (inserts + updates + deletes since the last
+        stats reset). It only ever increases within a stats epoch; after a
+        reset every table looks changed, which falls back to a full dump.
+        """
+        query = (
+            "SELECT relname, (n_tup_ins + n_tup_upd + n_tup_del)::bigint "
+            "FROM pg_stat_user_tables"
+        )
+        with self._connect(dbname) as conn:
+            with conn.cursor() as cur:
+                cur.execute(query)
+                return {str(name): int(count) for name, count in cur.fetchall()}
+
     def _execute(self, query: str | pgsql.Composed, params: tuple = (), dbname: str = "postgres") -> None:
         """Execute a DDL statement (with autocommit)."""
         with self._connect(dbname, autocommit=True) as conn:

@@ -10,13 +10,14 @@ from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn
 from rich.table import Column
 
 from ..adapters.mariadb import MariaDbAdapter
+from ..output import register
 from ..runner import PgRunner
 from .data import _LARGE_TABLE_THRESHOLD, DataMigrator
 from .report import MigrationReport, TableResult
 from .schema import DatabaseSchema, GeneratedDDL, SchemaExtractor, SchemaGenerator
 from .validate import ValidationResult, Validator
 
-console = Console()
+console = register(Console())
 
 
 class MigrateError(RuntimeError):

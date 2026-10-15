@@ -285,17 +285,22 @@ class MssqlAdapter(DbAdapter):
 
     def terminate_connections(self, dbname: str) -> int:
         _validate_identifier(dbname, "database name")
-        sql = (
-            f"DECLARE @sql NVARCHAR(MAX) = ''; "  # noqa: S608 — dbname validated by _validate_identifier above
-            f"SELECT @sql = @sql + 'KILL ' + CAST(spid AS NVARCHAR) + '; ' "
-            f"FROM sys.sysprocesses WHERE dbid = DB_ID(N'{dbname}') AND spid <> @@SPID; "
-            f"EXEC sp_executesql @sql;"
-        )
         try:
-            self._execute(sql, "master")
+            spids = self._query_col(
+                "SELECT CAST(spid AS NVARCHAR(10)) FROM sys.sysprocesses "
+                "WHERE dbid = DB_ID(%s) AND spid <> @@SPID",
+                (dbname,),
+            )
+        except MssqlError:
+            return 0
+        if not spids:
+            return 0
+        sql = " ".join(f"KILL {int(spid)};" for spid in spids)
+        try:
+            self._execute(sql, "master")  # noqa: S608 — spids are server-provided integers
         except MssqlError:
             pass
-        return 0
+        return len(spids)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

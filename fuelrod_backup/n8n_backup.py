@@ -14,8 +14,10 @@ from rich.table import Table
 
 from . import prompt as questionary
 from .config import Config
+from .notify import EXIT_ABORTED, EXIT_FAILURE
+from .output import emit, error, json_enabled, register
 
-console = Console()
+console = register(Console())
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -29,6 +31,9 @@ def _section(title: str) -> None:
 
 
 def _die(msg: str) -> None:
+    if json_enabled():
+        error(msg)
+        sys.exit(EXIT_FAILURE)
     console.print(f"[bold red]ERROR:[/] {msg}")
     sys.exit(1)
 
@@ -131,8 +136,13 @@ def _count_workflows(volume_name: str) -> str:
 #  Core backup logic for a single service
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _backup_service(service: str, cfg: Config) -> None:
-    """Perform a hot backup of one n8n Docker volume."""
+def _backup_service(service: str, cfg: Config) -> dict:
+    """
+    Perform a hot backup of one n8n Docker volume.
+
+    Returns a result record rather than printing only, so `run_n8n_backup`
+    can build a machine-readable payload.
+    """
     _validate_service(service)
     volume_name = f"{service}-data"
 
@@ -153,11 +163,13 @@ def _backup_service(service: str, cfg: Config) -> None:
         running = _is_container_running(service)
     except subprocess.CalledProcessError as exc:
         console.print(f"  [yellow]WARN:[/] Could not query Docker: {exc}. Skipping.")
-        return
+        return {"service": service, "status": "skipped", "file": None, "size": None,
+                "summary": None, "detail": f"docker query failed: {exc}"}
 
     if not running:
         console.print(f"  [yellow]WARN:[/] Container '[bold]{service}[/]' is not running. Skipping.")
-        return
+        return {"service": service, "status": "skipped", "file": None, "size": None,
+                "summary": None, "detail": "container not running"}
 
     # 2. Gather volume info
     console.print(f"  Gathering volume info for [bold]{volume_name}[/]...")
@@ -223,6 +235,15 @@ def _backup_service(service: str, cfg: Config) -> None:
     # 5. Cleanup old dated subdirs
     _cleanup_old(backup_dir, cfg.days_to_keep)
 
+    return {
+        "service": service,
+        "status": "ok",
+        "file": str(backup_file),
+        "size": backup_size,
+        "summary": str(summary_file),
+        "detail": f"volume {volume_name}, {vol_size}, {workflow_count} workflow(s)",
+    }
+
 
 def _cleanup_old(backup_dir: Path, days_to_keep: int) -> None:
     """Remove dated subdirectories older than days_to_keep days (0 = skip)."""
@@ -275,7 +296,8 @@ def run_n8n_backup(
     if not active_services:
         _die("No services to back up (all are skipped or the list is empty).")
 
-    console.print(Panel("[bold cyan]n8n Volume Backup[/]", expand=False))
+    if not json_enabled():
+        console.print(Panel("[bold cyan]n8n Volume Backup[/]", expand=False))
 
     _ensure_alpine_image()
 
@@ -295,10 +317,24 @@ def run_n8n_backup(
 
         if not questionary.confirm("Proceed with backup?", default=True).ask():
             console.print("[yellow]Aborted by user.[/]")
-            sys.exit(0)
+            sys.exit(EXIT_ABORTED)
 
-    for service in active_services:
-        _backup_service(service, cfg)
+    # A hard failure calls _die() and ends the process, so every record that
+    # reaches here is either "ok" or "skipped".
+    results = [_backup_service(service, cfg) for service in active_services]
+
+    if json_enabled():
+        emit({
+            "command": "n8n-backup",
+            "status": "ok",
+            "services": results,
+            "summary": {
+                "total": len(results),
+                "ok": sum(1 for r in results if r["status"] == "ok"),
+                "skipped": sum(1 for r in results if r["status"] == "skipped"),
+            },
+        })
+        return
 
     console.print()
     console.print(Panel("[bold green]n8n BACKUP COMPLETE[/]", expand=False))

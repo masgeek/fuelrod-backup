@@ -9,8 +9,10 @@ from rich.panel import Panel
 
 from .. import prompt as questionary
 from ..adapters.mariadb import MariaDbAdapter
+from ..notify import EXIT_ABORTED
+from ..output import register
 
-console = Console()
+console = register(Console())
 
 
 def _section(title: str) -> None:
@@ -161,7 +163,7 @@ def run_migrate_wizard(src_cfg, dst_cfg) -> tuple:
         default=False,
     ).ask():
         console.print("[yellow]Aborted.[/]")
-        sys.exit(0)
+        sys.exit(EXIT_ABORTED)
 
     options = dict(
         target_schema=target_schema,

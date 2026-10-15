@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from typing import Annotated
@@ -11,6 +12,8 @@ from rich.console import Console
 from rich.panel import Panel
 
 from .config import DbType, load_all_configs, load_config
+from .notify import EXIT_FAILURE, EXIT_USAGE
+from .output import enable_json, error, json_enabled, register
 
 _VERSION = _pkg_version("fuelrod-backup")
 
@@ -28,20 +31,56 @@ app = typer.Typer(
 )
 
 
+def _force_utf8_output() -> None:
+    """
+    Make stdout/stderr UTF-8 tolerant before anything prints.
+
+    Windows consoles still default to a legacy code page (cp1252), where Rich's
+    box-drawing and status glyphs (✓, ✗, ─) raise UnicodeEncodeError mid-render.
+    Reconfiguring to utf-8 with errors="replace" makes degraded output
+    possible instead of a traceback.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except (ValueError, OSError):  # already-detached or non-reconfigurable stream
+                pass
+
+
 @app.callback()
 def _main(
     version: Annotated[
         bool,
         typer.Option("--version", "-V", callback=_version_callback, is_eager=True, help="Show version and exit."),
     ] = False,
+    as_json: Annotated[bool, _JSON_OPT] = False,
 ) -> None:
-    pass
-console = Console()
+    _force_utf8_output()
+    _enable_json(as_json)
+console = register(Console())
 
 # Reusable option definitions
 _CONFIG_OPT = typer.Option("--config", "-c", help="Path to .backup or .env config file.", exists=True, dir_okay=False)
 _DOCKER_OPT = typer.Option("--docker/--no-docker", help="Override USE_DOCKER from config (highest priority).")
 _DB_TYPE_OPT = typer.Option("--db-type", "-t", help="Database engine: postgres | mariadb | mssql.")
+_JSON_OPT = typer.Option(
+    "--json",
+    help="Emit a machine-readable JSON document on stdout instead of human output.",
+)
+
+
+def _enable_json(as_json: bool) -> bool:
+    """
+    Switch the process into JSON output mode; returns whether it is active.
+
+    Sticky by design: a global `--json` before the subcommand must not be undone
+    by a subcommand that defaults to False, so this only ever turns the mode on.
+    """
+    if as_json:
+        enable_json(True)
+    return json_enabled()
 
 
 def _apply_docker_override(cfg, use_docker: bool | None) -> None:
@@ -50,9 +89,18 @@ def _apply_docker_override(cfg, use_docker: bool | None) -> None:
         cfg.use_docker = use_docker
 
 
+def _fail(msg: str, code: int) -> None:
+    """Report a fatal message on stderr and exit with the contract's code."""
+    if json_enabled():
+        error(msg)
+    else:
+        console.print(f"[bold red]ERROR:[/] {msg}")
+    raise typer.Exit(code=code)
+
+
 def _validate_db_type(db_type: str | None) -> None:
     if db_type is not None and db_type.lower() not in (e.value for e in DbType):
-        console.print(f"[bold red]ERROR:[/] Unknown --db-type '{db_type}'. Choose: postgres, mariadb, mssql")
+        _fail(f"Unknown --db-type '{db_type}'. Choose: postgres, mariadb, mssql", EXIT_USAGE)
         raise typer.Exit(code=1)
 
 
@@ -77,12 +125,24 @@ def backup(
             int | None,
             typer.Option("--keep-days", "-k", help="Delete backups older than N days (0 = keep forever)."),
         ] = None,
+        encrypt: Annotated[
+            bool | None,
+            typer.Option(
+                "--encrypt/--no-encrypt",
+                help="Encrypt artifacts with age/gpg after compression (overrides ENCRYPT).",
+            ),
+        ] = None,
         databases: Annotated[
             list[str],
             typer.Option("--db", "-d", help="Database(s) to back up (repeatable). Default: all."),
         ] = [],
+        schemas: Annotated[
+            list[str],
+            typer.Option("--schema", "-s", help="Schemas to back up (repeatable). Only applies to supported engines."),
+        ] = [],
         use_docker: Annotated[bool | None, _DOCKER_OPT] = None,
         db_type: Annotated[str | None, _DB_TYPE_OPT] = None,
+        as_json: Annotated[bool, _JSON_OPT] = False,
         config_file: Annotated[Path | None, _CONFIG_OPT] = None,
 ) -> None:
     """Back up one or more databases (postgres | mariadb | mssql).
@@ -93,13 +153,19 @@ def backup(
     from .backup import run_backup, run_parallel_backup
 
     _validate_db_type(db_type)
+    _enable_json(as_json)
     if all_engines:
         configs = load_all_configs(config_file)
         for cfg in configs:
             _apply_docker_override(cfg, use_docker)
+        if encrypt is not None:
+            for c in configs:
+                c.encrypt = encrypt
         run_parallel_backup(
             configs,
             databases=list(databases) or None,
+            schemas=list(schemas),
+
             compress=compress,
             keep_days=keep_days,
         )
@@ -107,17 +173,74 @@ def backup(
 
     cfg = load_config(config_file, db_type_override=db_type)
     _apply_docker_override(cfg, use_docker)
+    if encrypt is not None:
+        cfg.encrypt = encrypt
     run_backup(
         cfg,
         interactive=not no_interactive,
         databases=list(databases) or None,
         compress=compress,
         keep_days=keep_days,
+        schemas=list(schemas),
     )
 
 
 @app.command()
 def restore(
+        no_interactive: Annotated[
+            bool,
+            typer.Option(
+                "--no-interactive", "-n",
+                help="Skip all wizard prompts. Requires --project and --db; needs --yes to execute.",
+            ),
+        ] = False,
+        project: Annotated[
+            str | None,
+            typer.Option("--project", "-p", help="Project/group folder under BASE_DIR."),
+        ] = None,
+        databases: Annotated[
+            list[str],
+            typer.Option("--db", "-d", help="Database(s) to restore (repeatable)."),
+        ] = [],
+        file_name: Annotated[
+            str | None,
+            typer.Option("--file", "-f", help="Backup file name inside the database folder. Default: latest."),
+        ] = None,
+        target: Annotated[
+            str | None,
+            typer.Option("--target-db", help="Restore into this database name (default: same as --db)."),
+        ] = None,
+        scope: Annotated[
+            str,
+            typer.Option("--scope", help="full | schema | data (PostgreSQL only)."),
+        ] = "full",
+        clean: Annotated[
+            bool,
+            typer.Option("--clean/--no-clean", help="Drop existing objects before restoring."),
+        ] = True,
+        schemas: Annotated[
+            list[str],
+            typer.Option("--schema", help="Restore only this schema (repeatable)."),
+        ] = [],
+        no_owner: Annotated[
+            bool,
+            typer.Option("--no-owner", help="Restore with --no-owner --no-privileges (skip ownership)."),
+        ] = False,
+        dry_run: Annotated[
+            bool,
+            typer.Option("--dry-run", help="Print the restore plan and exit without changing anything."),
+        ] = False,
+        yes: Annotated[
+            bool,
+            typer.Option("--yes", "-y", help="Execute without the final confirmation (non-interactive)."),
+        ] = False,
+        chain: Annotated[
+            bool,
+            typer.Option(
+                "--incremental-chain",
+                help="After restoring the chosen base dump, apply every newer _inc dump in order.",
+            ),
+        ] = False,
         all_engines: Annotated[
             bool,
             typer.Option(
@@ -127,16 +250,20 @@ def restore(
         ] = False,
         use_docker: Annotated[bool | None, _DOCKER_OPT] = None,
         db_type: Annotated[str | None, _DB_TYPE_OPT] = None,
+        as_json: Annotated[bool, _JSON_OPT] = False,
         config_file: Annotated[Path | None, _CONFIG_OPT] = None,
 ) -> None:
-    """Interactively restore a database from a dump file (postgres | mariadb | mssql).
+    """Restore a database from a dump file (postgres | mariadb | mssql).
 
-    Use --all-engines to step through the restore wizard for every engine
-    whose PG_/MY_/MS_ credentials are configured, one engine at a time.
+    Interactive by default. With --no-interactive every prompt is replaced by
+    an explicit option: --project and --db are required, --file defaults to the
+    latest backup, and --yes is required to actually execute (otherwise the
+    plan is printed and nothing is changed).
     """
     from .restore import run_restore
 
     _validate_db_type(db_type)
+    _enable_json(as_json)
     if all_engines:
         configs = load_all_configs(config_file)
         for cfg in configs:
@@ -149,18 +276,152 @@ def restore(
         for cfg in configs:
             if len(configs) > 1:
                 console.print(f"\n[bold cyan]─── {cfg.db_type.value.upper()} ───[/]")
-            run_restore(cfg)
+            run_restore(cfg, interactive=not no_interactive)
         return
+
+    if not databases:
+        if no_interactive:
+            _fail("--db is required with --no-interactive.", EXIT_USAGE)
+    elif len(databases) > 1 and not no_interactive:
+        _fail("Interactive restore handles one database at a time.", EXIT_USAGE)
 
     cfg = load_config(config_file, db_type_override=db_type)
     _apply_docker_override(cfg, use_docker)
-    run_restore(cfg)
+
+    if len(databases) > 1:
+        # Multi-database automation: one target database per source.
+        for db in databases:
+            run_restore(
+                cfg,
+                interactive=False,
+                project=project,
+                database=db,
+                file_name=file_name,
+                target=target,
+                scope=scope,
+                clean=clean,
+                schemas=list(schemas),
+                no_owner=no_owner,
+                dry_run=dry_run,
+                yes=yes,
+                incremental_chain=chain,
+            )
+        return
+
+    run_restore(
+        cfg,
+        interactive=not no_interactive,
+        project=project,
+        database=databases[0] if databases else None,
+        file_name=file_name,
+        target=target,
+        scope=scope,
+        clean=clean,
+        schemas=list(schemas),
+        no_owner=no_owner,
+        dry_run=dry_run,
+        yes=yes,
+        incremental_chain=chain,
+    )
+
+
+@app.command("doctor")
+def doctor(
+        skip_connection: Annotated[
+            bool,
+            typer.Option("--skip-connection", help="Skip the live database connection test."),
+        ] = False,
+        as_json: Annotated[bool, _JSON_OPT] = False,
+        config_file: Annotated[Path | None, _CONFIG_OPT] = None,
+) -> None:
+    """Run pre-flight checks and report everything that is not ready.
+
+    Verifies the config file, credentials, BASE_DIR writability and free disk
+    space, required external binaries (pg_dump, mariadb-dump, ...), Docker and
+    the service state, the database connection, and rclone/n8n configuration.
+    Exits non-zero if any check fails.
+    """
+    from .doctor import run_doctor
+
+    _enable_json(as_json)
+    cfg = load_config(config_file)
+    code = run_doctor(cfg, skip_connection=skip_connection)
+    if code:
+        raise typer.Exit(code=code)
+
+
+@app.command("verify")
+def verify(
+        engine: Annotated[
+            str | None,
+            typer.Option("--engine", "-e", help="Restrict to one engine folder: postgres | mariadb | mssql."),
+        ] = None,
+        project: Annotated[
+            str | None,
+            typer.Option("--project", "-p", help="Restrict to one project folder under BASE_DIR."),
+        ] = None,
+        databases: Annotated[
+            list[str],
+            typer.Option("--db", "-d", help="Restrict to these database folders (repeatable)."),
+        ] = [],
+        latest: Annotated[
+            bool,
+            typer.Option("--latest", "-l", help="Verify only the newest backup per database."),
+        ] = False,
+        checksum: Annotated[
+            bool,
+            typer.Option("--checksum", "-k", help="Also compute a SHA-256 for each artifact."),
+        ] = False,
+        deep: Annotated[
+            bool,
+            typer.Option("--deep", help="Fully decompress/CRC every archive (slow on large trees)."),
+        ] = False,
+        parallel: Annotated[
+            int | None,
+            typer.Option("--parallel", "-j", help="Concurrent workers. Default: min(8, CPU count)."),
+        ] = None,
+        as_json: Annotated[bool, _JSON_OPT] = False,
+        config_file: Annotated[Path | None, _CONFIG_OPT] = None,
+) -> None:
+    """Verify that backup files on disk are actually restorable.
+
+    Checks each artifact under BASE_DIR: gzip/zip integrity, SQL headers,
+    SQL Server backup headers, and — when pg_restore is available — the
+    PostgreSQL table of contents. Exits non-zero if any artifact fails.
+    """
+    from .verify import run_verify
+
+    _enable_json(as_json)
+    cfg = load_config(config_file)
+    if engine:
+        _validate_db_type(engine)
+    code = run_verify(
+        cfg,
+        engine=engine,
+        project=project,
+        database=databases[0] if databases else None,
+        latest_only=latest,
+        checksum=checksum,
+        deep=deep,
+        parallel=parallel,
+    )
+    if code:
+        raise typer.Exit(code=code)
 
 
 @app.command("drop")
 def drop(
+        disconnect_only: Annotated[bool, typer.Option(
+            "--disconnect-only",
+            help="Terminate all connections to the database instead of dropping it.",
+        )] = False,
+        db: Annotated[str | None, typer.Option(
+            "--db", "-d",
+            help="Target database — skip the database prompt (used with --disconnect-only).",
+        )] = None,
         use_docker: Annotated[bool | None, _DOCKER_OPT] = None,
         db_type: Annotated[str | None, _DB_TYPE_OPT] = None,
+        as_json: Annotated[bool, _JSON_OPT] = False,
         config_file: Annotated[Path | None, _CONFIG_OPT] = None,
 ) -> None:
     """Interactively drop a database or schema.
@@ -168,17 +429,21 @@ def drop(
     Kills all active connections before dropping a database.
     Schema drop uses CASCADE (removes all objects inside the schema).
     Requires typing the name to confirm — operation is irreversible.
+
+    Use --disconnect-only to terminate connections WITHOUT dropping anything.
     """
     from .drop import run_drop
 
+    _enable_json(as_json)
     _validate_db_type(db_type)
     cfg = load_config(config_file, db_type_override=db_type)
     _apply_docker_override(cfg, use_docker)
-    run_drop(cfg)
+    run_drop(cfg, disconnect_only=disconnect_only, db_name=db)
 
 
 @app.command("create")
 def create(
+        as_json: Annotated[bool, _JSON_OPT] = False,
         use_docker: Annotated[bool | None, _DOCKER_OPT] = None,
         db_type: Annotated[str | None, _DB_TYPE_OPT] = None,
         config_file: Annotated[Path | None, _CONFIG_OPT] = None,
@@ -190,6 +455,7 @@ def create(
     """
     from .create import run_create
 
+    _enable_json(as_json)
     _validate_db_type(db_type)
     cfg = load_config(config_file, db_type_override=db_type)
     _apply_docker_override(cfg, use_docker)
@@ -201,6 +467,7 @@ def test_connection(
         use_docker: Annotated[bool | None, _DOCKER_OPT] = None,
         db_type: Annotated[str | None, _DB_TYPE_OPT] = None,
         config_file: Annotated[Path | None, _CONFIG_OPT] = None,
+        as_json: Annotated[bool, _JSON_OPT] = False,
 ) -> None:
     """Test the database connection and print resolved settings."""
     from .adapters import get_adapter
@@ -209,30 +476,55 @@ def test_connection(
     cfg = load_config(config_file, db_type_override=db_type)
     _apply_docker_override(cfg, use_docker)
 
-    pass_hint = f"{'*' * min(len(cfg.password), 6)}  ({len(cfg.password)} chars)" if cfg.password else "[red]NOT SET[/]"
-    source = str(cfg.config_source) if cfg.config_source else "[red]none found — using defaults only[/]"
-    docker_override = " [yellow](CLI override)[/]" if use_docker is not None else ""
+    _enable_json(as_json)
+    if not as_json:
+        pass_hint = (
+            f"{'*' * min(len(cfg.password), 6)}  ({len(cfg.password)} chars)"
+            if cfg.password else "[red]NOT SET[/]"
+        )
+        source = str(cfg.config_source) if cfg.config_source else "[red]none found — using defaults only[/]"
+        docker_override = " [yellow](CLI override)[/]" if use_docker is not None else ""
 
-    console.print()
-    console.print("[bold]Resolved settings:[/]")
-    console.print(f"  Config source : {source}")
-    console.print(f"  DB type       : [cyan]{cfg.db_type.value}[/]")
-    mode = f"[cyan]Docker[/] — service {cfg.service!r}" if cfg.use_docker else "Direct"
-    console.print(f"  Mode          : {mode}{docker_override}")
-    console.print(f"  Host          : {cfg.host}:{cfg.port}")
-    console.print(f"  User          : {cfg.user}")
-    console.print(f"  Password      : {pass_hint}")
-    console.print(f"  Backup dir    : {cfg.backup_dir}")
-    console.print(f"  Compress      : {cfg.compress}")
-    console.print(f"  Retain        : {cfg.days_to_keep} days")
-    console.print()
+        console.print()
+        console.print("[bold]Resolved settings:[/]")
+        console.print(f"  Config source : {source}")
+        console.print(f"  DB type       : [cyan]{cfg.db_type.value}[/]")
+        mode = f"[cyan]Docker[/] — service {cfg.service!r}" if cfg.use_docker else "Direct"
+        console.print(f"  Mode          : {mode}{docker_override}")
+        console.print(f"  Host          : {cfg.host}:{cfg.port}")
+        console.print(f"  User          : {cfg.user}")
+        console.print(f"  Password      : {pass_hint}")
+        console.print(f"  Backup dir    : {cfg.backup_dir}")
+        console.print(f"  Compress      : {cfg.compress}")
+        console.print(f"  Retain        : {cfg.days_to_keep} days")
+        console.print()
 
     adapter = get_adapter(cfg)
     try:
         adapter.check_connection()
-        console.print("[bold green]✓ Connection successful.[/]")
+        if as_json:
+            import json
+            print(json.dumps({
+                "config_source": str(cfg.config_source) if cfg.config_source else None,
+                "db_type": cfg.db_type.value,
+                "mode": "docker" if cfg.use_docker else "direct",
+                "host": f"{cfg.host}:{cfg.port}",
+                "user": cfg.user,
+                "password_set": bool(cfg.password),
+                "backup_dir": cfg.backup_dir,
+                "connection_successful": True,
+            }, indent=2))
+        else:
+            console.print("[bold green]✓ Connection successful.[/]")
     except Exception as exc:
-        console.print(f"[bold red]✗ Connection failed:[/] {exc}")
+        if as_json:
+            import json
+            print(json.dumps({
+                "connection_successful": False,
+                "error": str(exc),
+            }, indent=2))
+        else:
+            console.print(f"[bold red]✗ Connection failed:[/] {exc}")
         raise typer.Exit(code=1)
 
 
@@ -242,6 +534,7 @@ def init_config(
             Path,
             typer.Option("--output", "-o", help="Path for the config file.", dir_okay=False),
         ] = None,
+        as_json: Annotated[bool, _JSON_OPT] = False,
 ) -> None:
     """Create or update a .backup config file interactively."""
     from . import prompt as q
@@ -251,6 +544,23 @@ def init_config(
         output = user_config_dir() / ".backup"
     output = output.resolve()
     updating = output.exists()
+
+    _enable_json(as_json)
+    if as_json:
+        import json
+        cfg = load_config(None)
+        print(json.dumps({
+            "output_file": str(output),
+            "proposed_keys": {
+                "DB_TYPE": cfg.db_type.value,
+                "DB_USERNAME": cfg.user,
+                "DB_HOST": cfg.host,
+                "DB_PORT": str(cfg.port),
+                "BASE_DIR": cfg.base_dir,
+                "KEEP_DAYS": cfg.days_to_keep,
+            }
+        }, indent=2))
+        return
 
     existing_source: Path | None = output if updating else _find_config_file()
     existing_cfg = load_config(existing_source) if existing_source else None
@@ -293,6 +603,105 @@ def init_config(
 # ──────────────────────────────────────────────────────────────────────────────
 #  init helpers
 # ──────────────────────────────────────────────────────────────────────────────
+
+def _init_generic_remote(q, output: Path, updating: bool, existing_raw: dict[str, str]) -> dict[str, str]:
+    """Collect a generic rclone remote string."""
+    console.print()
+    console.rule("[bold cyan]Off-site Generic Remote[/]")
+    ex_remote = existing_raw.get("REMOTE", "")
+    remote = q.text(
+        "rclone remote spec (REMOTE)\n"
+        "Example: 'sftp:user@host:/path' or 'b2:bucket/folder' or '/mnt/backups'",
+        default=ex_remote
+    ).ask() or ex_remote
+    return {"REMOTE": remote} if remote else {}
+
+    lines = output.read_text(encoding="utf-8").splitlines()
+    new_lines = []
+    set_keys = set()
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            new_lines.append(line)
+            continue
+        if "=" in stripped:
+            key, val = stripped.split("=", 1)
+            if key in keys:
+                new_lines.append(f"{key}={keys[key]}")
+                set_keys.add(key)
+                continue
+        new_lines.append(line)
+
+    # Add new keys at the end
+    for key, val in keys.items():
+        if key not in set_keys:
+            new_lines.append(f"{key}={val}")
+
+    output.write_text("\n".join(new_lines), encoding="utf-8")
+    output.chmod(0o600)
+
+def _init_s3_remote(q, output: Path, updating: bool, existing_raw: dict[str, str]) -> dict[str, str]:
+    from . import rclone_config
+    
+    console.print()
+    console.rule("[bold cyan]Off-site S3 Target[/]")
+    
+    ex_remote = existing_raw.get("S3_REMOTE", "s3-backup")
+    remote_name = q.text("rclone remote name (S3_REMOTE)", default=ex_remote).ask() or ex_remote
+    
+    ex_bucket = existing_raw.get("S3_BUCKET", "")
+    bucket = q.text("S3 bucket (S3_BUCKET)", default=ex_bucket).ask() or ex_bucket
+    if not bucket:
+        console.print("[yellow]Skipping S3 config (bucket required).[/]")
+        return {}
+
+    ex_prefix = existing_raw.get("S3_PREFIX", "")
+    prefix = q.text("S3 key prefix (S3_PREFIX)", default=ex_prefix).ask() or ex_prefix
+    
+    ex_provider = existing_raw.get("S3_PROVIDER", "")
+    provider_choice = q.select(
+        "S3 provider",
+        choices=[q.Choice(label, v) for label, v in rclone_config.S3_PROVIDERS],
+        default=ex_provider or "",
+    ).ask()
+    provider_val = provider_choice.value if hasattr(provider_choice, "value") else provider_choice
+
+    ex_region = existing_raw.get("S3_REGION", "")
+    region = q.text("S3 region (S3_REGION)", default=ex_region).ask() or ex_region
+    
+    ex_endpoint = existing_raw.get("S3_ENDPOINT", "")
+    endpoint = q.text("S3 endpoint (S3_ENDPOINT) [leave blank for AWS]", default=ex_endpoint).ask() or ex_endpoint
+
+    console.print("\n  S3 credentials can be stored in rclone config or .backup file.")
+    use_env_auth = q.confirm("Store keys in rclone config? (secrets will NOT be in .backup)", default=True).ask()
+    
+    ex_access = existing_raw.get("S3_ACCESS_KEY_ID", "")
+    ex_secret = existing_raw.get("S3_SECRET_ACCESS_KEY", "")
+    
+    access_key = q.text("Access Key ID (S3_ACCESS_KEY_ID)", default=ex_access).ask() or ex_access
+    secret_key = q.password("Secret Access Key (S3_SECRET_ACCESS_KEY)", default=ex_secret).ask() or ex_secret
+
+    try:
+        rclone_config.write_remote(
+            remote_name,
+            "s3",
+            rclone_config.s3_options(access_key, secret_key, provider_val, region, endpoint, not use_env_auth)
+        )
+        console.print(f"[bold green]✓[/] rclone remote {remote_name} configured.")
+    except Exception as exc:
+        console.print(f"[bold red]✗[/] rclone config failed: {exc}")
+
+    return {
+        "S3_REMOTE": remote_name,
+        "S3_BUCKET": bucket,
+        "S3_PREFIX": prefix,
+        "S3_PROVIDER": provider_val,
+        "S3_REGION": region,
+        "S3_ENDPOINT": endpoint,
+        "S3_ACCESS_KEY_ID": access_key,
+        "S3_SECRET_ACCESS_KEY": secret_key,
+    }
 
 def _write_config(output: Path, lines: list[str], updating: bool) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -505,6 +914,30 @@ def _init_multi_engine(q, output: Path, updating: bool, existing_raw: dict[str, 
             lines.append(f"{prefix}{short}={val}")
         lines.append("")
 
+    # Off-site sync
+    if q.confirm("\nConfigure an off-site sync remote now?", default=False).ask():
+        remote_type = q.select(
+            "Remote configuration type",
+            choices=[
+                q.Choice("Guided S3 Setup", value="s3"),
+                q.Choice("Generic rclone remote", value="generic"),
+            ],
+            default="s3",
+        ).ask()
+        
+        if remote_type == "s3":
+            s3_keys = _init_s3_remote(q, output, updating, existing_raw)
+            for k, v in s3_keys.items():
+                lines.append(f"{k}={v}")
+            if s3_keys:
+                lines.append("")
+        else:
+            gen_keys = _init_generic_remote(q, output, updating, existing_raw)
+            for k, v in gen_keys.items():
+                lines.append(f"{k}={v}")
+            if gen_keys:
+                lines.append("")
+
     _write_config(output, lines, updating)
 
 
@@ -691,7 +1124,69 @@ def _init_single_engine(q, output: Path, updating: bool, existing_cfg, existing_
             "",
         ]
 
+    # Off-site sync
+    if q.confirm("\nConfigure an off-site sync remote now?", default=False).ask():
+        remote_type = q.select(
+            "Remote configuration type",
+            choices=[
+                q.Choice("Guided S3 Setup", value="s3"),
+                q.Choice("Generic rclone remote", value="generic"),
+            ],
+            default="s3",
+        ).ask()
+        
+        if remote_type == "s3":
+            s3_keys = _init_s3_remote(q, output, updating, existing_raw)
+            for k, v in s3_keys.items():
+                lines.append(f"{k}={v}")
+            if s3_keys:
+                lines.append("")
+        else:
+            gen_keys = _init_generic_remote(q, output, updating, existing_raw)
+            for k, v in gen_keys.items():
+                lines.append(f"{k}={v}")
+            if gen_keys:
+                lines.append("")
+
     _write_config(output, lines, updating)
+
+
+@app.command("sync-init")
+def sync_init(
+        output: Annotated[
+            Path,
+            typer.Option("--output", "-o", help="Path for the config file.", dir_okay=False),
+        ] = None,
+) -> None:
+    """Configure off-site sync settings without running a full init wizard."""
+    from . import prompt as q
+    from .config import _parse_env_file, user_config_dir
+
+    if output is None:
+        output = user_config_dir() / ".backup"
+    output = output.resolve()
+
+    existing_raw = _parse_env_file(output) if output.is_file() else {}
+
+    remote_type = q.select(
+        "Remote configuration type",
+        choices=[
+            q.Choice("Guided S3 Setup", value="s3"),
+            q.Choice("Generic rclone remote", value="generic"),
+        ],
+        default="s3",
+    ).ask()
+
+    if remote_type == "s3":
+        keys = _init_s3_remote(q, output, output.exists(), existing_raw)
+    else:
+        keys = _init_generic_remote(q, output, output.exists(), existing_raw)
+
+    if keys:
+        _update_config_keys(output, keys)
+        console.print(f"\n[bold green]✓[/] Sync settings updated in [bold]{output}[/]")
+    else:
+        console.print("\n[yellow]No changes made to config.[/]")
 
 
 @app.command("n8n-backup")
@@ -704,11 +1199,13 @@ def n8n_backup_cmd(
             list[str],
             typer.Option("--service", "-s", help="Service(s) to back up (repeatable). Default: all."),
         ] = [],
+        as_json: Annotated[bool, _JSON_OPT] = False,
         config_file: Annotated[Path | None, _CONFIG_OPT] = None,
 ) -> None:
     """Back up n8n Docker volumes (hot snapshot, no downtime)."""
     from .n8n_backup import run_n8n_backup
 
+    _enable_json(as_json)
     cfg = load_config(config_file)
     run_n8n_backup(cfg, interactive=not no_interactive, services=list(services) or None)
 
@@ -731,25 +1228,30 @@ def n8n_restore_cmd(
             bool,
             typer.Option("--verbose", "-v", help="Print detailed step logs."),
         ] = False,
+        as_json: Annotated[bool, _JSON_OPT] = False,
         config_file: Annotated[Path | None, _CONFIG_OPT] = None,
 ) -> None:
     """Restore an n8n Docker volume from a backup archive."""
     from .n8n_restore import run_n8n_restore
 
+    _enable_json(as_json)
     cfg = load_config(config_file)
     run_n8n_restore(cfg, service=service, backup_file=backup_file, dry_run=dry_run, verbose=verbose)
 
 
-@app.command("gdrive-sync")
-def gdrive_sync_cmd(
+@app.command("sync")
+def sync_cmd(
+        remote: Annotated[
+            str | None,
+            typer.Option(
+                "--remote", "-r",
+                help="Target rclone remote, e.g. s3:my-bucket/backups, b2:bucket, sftp:host:/srv/backups.",
+            ),
+        ] = None,
         dry_run: Annotated[
             bool,
             typer.Option("--dry-run", "-d", help="Show what would happen — no files moved or deleted."),
         ] = False,
-        gdrive: Annotated[
-            str | None,
-            typer.Option("--gdrive", "-g", help="Google Drive remote folder name (overrides GDRIVE)."),
-        ] = None,
         days: Annotated[
             int | None,
             typer.Option("--days", "-n", help="Prune remote files older than N days (overrides BACKUP_AGE)."),
@@ -762,20 +1264,64 @@ def gdrive_sync_cmd(
             bool,
             typer.Option("--keep-local", help="Do NOT delete local files after a successful upload."),
         ] = False,
+        list_remotes: Annotated[
+            bool,
+            typer.Option("--list-remotes", help="List the rclone remotes configured on this host and exit."),
+        ] = False,
+        no_interactive: Annotated[
+            bool,
+            typer.Option("--no-interactive", "-ni", help="Skip interactive selection of schemas and date range."),
+        ] = False,
+        transfers: Annotated[
+            int | None,
+            typer.Option("--transfers", help="Number of parallel file transfers. Default: 4."),
+        ] = None,
+        checkers: Annotated[
+            int | None,
+            typer.Option("--checkers", help="Number of parallel checkers. Default: 8."),
+        ] = None,
+        since: Annotated[
+            int | None,
+            typer.Option("--since", help="Only upload files modified in the last N days."),
+        ] = None,
+        until: Annotated[
+            int | None,
+            typer.Option("--until", help="Only upload files modified before N days ago."),
+        ] = None,
+        schema: Annotated[
+            list[str],
+            typer.Option("--schema", "-s", help="Only upload artifacts for these databases/schemas (repeatable)."),
+        ] = [],
+        as_json: Annotated[bool, _JSON_OPT] = False,
         config_file: Annotated[Path | None, _CONFIG_OPT] = None,
 ) -> None:
-    """Sync local backups to Google Drive via rclone, then prune old remote files."""
-    from .gdrive_sync import run_gdrive_sync
+    """Upload backups to any rclone remote and prune old files there.
 
+    Works with every backend rclone supports: Google Drive, S3, S3-compatible
+    (MinIO, Wasabi), Backblaze B2, SFTP, Azure Blob, WebDAV. Local files are
+    deleted only after a successful upload.
+    """
+    from .storage import default_remote, run_sync
+
+    _enable_json(as_json)
     cfg = load_config(config_file)
-    run_gdrive_sync(
+    code = run_sync(
         cfg,
+        remote=remote or default_remote(cfg),
         dry_run=dry_run,
-        gdrive_remote=gdrive,
         age_days=days,
         include_patterns=list(include) or None,
         delete_local=not keep_local,
+        show_remotes=list_remotes,
+        transfers=transfers,
+        checkers=checkers,
+        since=since,
+        until=until,
+        schemas=list(schema),
+        interactive=not no_interactive,
     )
+    if code:
+        raise typer.Exit(code=code)
 
 
 @app.command("migrate")
@@ -843,6 +1389,7 @@ def migrate(
             Path | None,
             typer.Option("--report", "-r", help="Write JSON migration report to this file."),
         ] = None,
+        as_json: Annotated[bool, _JSON_OPT] = False,
         config_file: Annotated[Path | None, _CONFIG_OPT] = None,
 ) -> None:
     """Migrate one or more databases from MariaDB to PostgreSQL.
@@ -853,22 +1400,23 @@ def migrate(
     from .config import DbType
     from .migrate import run_migrate
 
+    _enable_json(as_json)
     all_cfgs = load_all_configs(config_file)
     src_cfgs = [c for c in all_cfgs if c.db_type == DbType.MARIADB]
     dst_cfgs = [c for c in all_cfgs if c.db_type == DbType.POSTGRES]
 
     if not src_cfgs:
-        console.print(
-            "[bold red]ERROR:[/] No MariaDB source config found. "
-            "Set MY_USERNAME and MY_HOST in .backup (multi-engine mode)."
+        _fail(
+            "No MariaDB source config found. "
+            "Set MY_USERNAME and MY_HOST in .backup (multi-engine mode).",
+            EXIT_FAILURE,
         )
-        raise typer.Exit(code=1)
     if not dst_cfgs:
-        console.print(
-            "[bold red]ERROR:[/] No PostgreSQL target config found. "
-            "Set PG_USERNAME and PG_HOST in .backup (multi-engine mode)."
+        _fail(
+            "No PostgreSQL target config found. "
+            "Set PG_USERNAME and PG_HOST in .backup (multi-engine mode).",
+            EXIT_FAILURE,
         )
-        raise typer.Exit(code=1)
 
     run_migrate(
         src_cfg=src_cfgs[0],

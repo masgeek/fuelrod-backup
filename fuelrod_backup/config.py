@@ -38,6 +38,33 @@ class Config:
     base_dir: str = ""  # backup root directory (raw root)
     compress: bool = False
     days_to_keep: int = 7
+    # Incremental (PostgreSQL only) — dump only tables that changed since the
+    # last full dump; the base dump is kept until it is superseded.
+    incremental: bool = False
+    incremental_keep: int = 5
+    # Encryption at rest (age by default, gpg supported)
+    encrypt: bool = False
+    encrypt_tool: str = "age"
+    encrypt_recipient: str = ""
+    encrypt_identity_file: str = ""
+    encrypt_passphrase_file: str = ""
+    # Notifications (webhook and/or command hooks)
+    notify_on: str = ""            # NOTIFY_ON — success | failure | all
+    notify_url: str = ""           # NOTIFY_URL — webhook endpoint
+    notify_timeout: int = 15       # NOTIFY_TIMEOUT
+    notify_hook_success: str = ""  # NOTIFY_HOOK_SUCCESS — command template
+    notify_hook_failure: str = ""  # NOTIFY_HOOK_FAILURE — command template
+    # Off-site sync (rclone)
+    remote: str = ""                   # REMOTE — default rclone remote (e.g. "s3:bucket" or "my-b2:")
+    s3_remote: str = ""                 # S3_REMOTE — rclone remote name
+    s3_bucket: str = ""                 # S3_BUCKET
+    s3_prefix: str = ""                 # S3_PREFIX — key prefix inside the bucket
+    s3_provider: str = ""               # S3_PROVIDER — Minio, Wasabi, ...
+    s3_region: str = ""                 # S3_REGION
+    s3_endpoint: str = ""               # S3_ENDPOINT — for self-hosted S3
+    s3_access_key_id: str = ""          # S3_ACCESS_KEY_ID
+    s3_secret_access_key: str = ""      # S3_SECRET_ACCESS_KEY
+
     connection_timeout: int = 30  # seconds; applies to driver connect + docker subprocess checks
     # n8n volume backup
     n8n_services: list[str] = field(default_factory=lambda: ["n8n"])
@@ -52,13 +79,6 @@ class Config:
     mysql_cmd: str = "mysql"
     # MSSQL specific
     mssql_backup_dir: str = "/var/opt/mssql/backups"  # path inside container
-    # Google Drive sync (gbk / rclone)
-    gdrive_remote: str = "db-backup"          # GDRIVE — rclone remote folder name
-    gdrive_age_days: int = 2                  # BACKUP_AGE — prune remote files older than N days
-    gdrive_include: list[str] = field(default_factory=lambda: [
-        "*.sql.zip", "*.sql.gz", "*_backups.zip", "*.tar.gz",
-        "*.dump", "*.dump.gz", "*.bak", "*.txt",
-    ])                                        # INCLUDE_FILES — space-separated glob patterns
     config_source: Path | None = field(default=None, repr=False)  # which file was loaded
 
     @property
@@ -102,6 +122,54 @@ def _parse_env_file(path: Path) -> dict[str, str]:
 
         result[key] = val
     return result
+
+
+def _load_incremental(cfg: Config, get) -> None:
+    """Parse INCREMENTAL / INCREMENTAL_KEEP from any lookup callable."""
+    cfg.incremental = get("INCREMENTAL", "false").strip().lower() in ("true", "1", "yes")
+    try:
+        cfg.incremental_keep = int(get("INCREMENTAL_KEEP", "5"))
+    except ValueError:
+        cfg.incremental_keep = 5
+
+
+def _load_encryption(cfg: Config, get) -> None:
+    """Parse the encryption-at-rest settings from any lookup callable."""
+    cfg.encrypt = get("ENCRYPT", "false").strip().lower() in ("true", "1", "yes")
+    cfg.encrypt_tool = get("ENCRYPT_TOOL", "age").strip() or "age"
+    cfg.encrypt_recipient = get("ENCRYPT_RECIPIENT", "").strip()
+    cfg.encrypt_identity_file = get("ENCRYPT_IDENTITY_FILE", "").strip()
+    cfg.encrypt_passphrase_file = get("ENCRYPT_PASSPHRASE_FILE", "").strip()
+
+
+def _load_remote(cfg: Config, get) -> None:
+    """Parse the generic rclone remote from any lookup callable."""
+    cfg.remote = get("REMOTE", "").strip()
+
+
+def _load_s3(cfg: Config, get) -> None:
+    """Parse the S3 off-site settings from any lookup callable."""
+    cfg.s3_remote = get("S3_REMOTE", "").strip()
+    cfg.s3_bucket = get("S3_BUCKET", "").strip()
+    cfg.s3_prefix = get("S3_PREFIX", "").strip()
+    cfg.s3_provider = get("S3_PROVIDER", "").strip()
+    cfg.s3_region = get("S3_REGION", "").strip()
+    cfg.s3_endpoint = get("S3_ENDPOINT", "").strip()
+    cfg.s3_access_key_id = get("S3_ACCESS_KEY_ID", "").strip()
+    cfg.s3_secret_access_key = get("S3_SECRET_ACCESS_KEY", "").strip()
+
+
+
+def _load_notifications(cfg: Config, get) -> None:
+    """Parse notification settings from any lookup callable."""
+    cfg.notify_on = get("NOTIFY_ON", "").strip()
+    cfg.notify_url = get("NOTIFY_URL", "").strip()
+    cfg.notify_hook_success = get("NOTIFY_HOOK_SUCCESS", "").strip()
+    cfg.notify_hook_failure = get("NOTIFY_HOOK_FAILURE", "").strip()
+    try:
+        cfg.notify_timeout = int(get("NOTIFY_TIMEOUT", "15"))
+    except ValueError:
+        cfg.notify_timeout = 15
 
 
 def user_config_dir() -> Path:
@@ -257,21 +325,17 @@ def load_config(config_file: Path | None = None, db_type_override: str | None = 
     except ValueError:
         cfg.days_to_keep = 7
 
+    _load_incremental(cfg, _get)
+    _load_encryption(cfg, _get)
+    _load_remote(cfg, _get)
+    _load_s3(cfg, _get)
+    _load_notifications(cfg, _get)
+
     # n8n volume backup
     raw_n8n = _get("N8N_SERVICES", "n8n").strip()
     cfg.n8n_services = [s.strip() for s in raw_n8n.split() if s.strip()]
     raw_skip = _get("SKIP_SERVICES", "").strip()
     cfg.skip_services = [s.strip() for s in raw_skip.split() if s.strip()] if raw_skip else []
-
-    # Google Drive sync
-    cfg.gdrive_remote = _get("GDRIVE", "db-backup")
-    try:
-        cfg.gdrive_age_days = int(_get("BACKUP_AGE", "2"))
-    except ValueError:
-        cfg.gdrive_age_days = 2
-    raw_include = _get("INCLUDE_FILES", "").strip()
-    if raw_include:
-        cfg.gdrive_include = [p.strip() for p in raw_include.split() if p.strip()]
 
     return cfg
 
@@ -308,6 +372,11 @@ def _load_prefixed_config(
         cfg.days_to_keep = int(_get("KEEP_DAYS", "7"))
     except ValueError:
         cfg.days_to_keep = 7
+    _load_incremental(cfg, _get)
+    _load_encryption(cfg, _get)
+    _load_remote(cfg, _get)
+    _load_s3(cfg, _get)
+    _load_notifications(cfg, _get)
     try:
         cfg.connection_timeout = int(_get("CONNECTION_TIMEOUT", "30"))
     except ValueError:
