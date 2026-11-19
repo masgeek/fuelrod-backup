@@ -20,6 +20,7 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeEl
 from rich.table import Column, Table
 
 from .config import Config
+from .fileutil import human_size
 from .notify import EXIT_FAILURE, EXIT_OK, EXIT_VERIFY_FAILED, notify, report_delivery_errors
 from .output import emit, error, json_enabled, register
 
@@ -160,7 +161,7 @@ def _check_readable(path: Path) -> Check:
                 return Check("readable", "fail", "file is empty")
     except OSError as exc:
         return Check("readable", "fail", str(exc))
-    return Check("readable", "ok", f"{path.stat().st_size / 1024 / 1024:.2f} MB")
+    return Check("readable", "ok", human_size(path.stat().st_size))
 
 
 def _gzip_stream(path: Path):
@@ -574,8 +575,4 @@ def _verify_all(
 
 
 def _human(size: int) -> str:
-    if size > 1024 * 1024:
-        return f"{size / 1024 / 1024:.1f} MB"
-    if size > 1024:
-        return f"{size / 1024:.1f} KB"
-    return f"{size} B"
+    return human_size(size)

@@ -14,6 +14,7 @@ from rich.table import Table
 
 from . import prompt as questionary
 from .config import Config
+from .fileutil import human_size
 from .notify import EXIT_ABORTED, EXIT_FAILURE
 from .output import emit, error, json_enabled, register
 
@@ -51,12 +52,7 @@ def _validate_service(service: str) -> None:
 
 
 def _human_size(path: Path) -> str:
-    size = path.stat().st_size
-    if size > 1024 * 1024:
-        return f"{size / 1024 / 1024:.1f} MB"
-    if size > 1024:
-        return f"{size / 1024:.1f} KB"
-    return f"{size} B"
+    return human_size(path.stat().st_size)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

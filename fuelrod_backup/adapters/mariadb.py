@@ -10,7 +10,6 @@ MySQL has no schemas separate from databases, so supports_schemas = False.
 from __future__ import annotations
 
 import gzip
-import os
 import re
 import shutil
 import subprocess
@@ -19,6 +18,7 @@ import zipfile
 from pathlib import Path
 
 from ..config import Config
+from ..procenv import minimal_env
 from .base import DbAdapter
 
 # Identifiers used in DDL (DROP/CREATE DATABASE) cannot be parameterised.
@@ -123,14 +123,12 @@ class MariaDbAdapter(DbAdapter):
         """docker exec prefix that injects MYSQL_PWD to avoid password on CLI."""
         return [
             "docker", "exec", "-i",
-            "-e", f"MYSQL_PWD={self._cfg.password}",
+            "-e", "MYSQL_PWD",  # forwarded from the docker process env, not argv
             self._cfg.service,
         ]
 
     def _host_env(self) -> dict[str, str]:
-        env = os.environ.copy()
-        env["MYSQL_PWD"] = self._cfg.password
-        return env
+        return minimal_env({"MYSQL_PWD": self._cfg.password})
 
     # ── mandatory ──────────────────────────────────────────────────
 
@@ -146,6 +144,7 @@ class MariaDbAdapter(DbAdapter):
                 ["docker", "inspect", "--format", "{{.State.Status}}", cfg.service],
                 capture_output=True,
                 timeout=cfg.connection_timeout,
+                env=minimal_env(),
             )
             status = state.stdout.decode().strip()
             if status != "running":
@@ -158,6 +157,7 @@ class MariaDbAdapter(DbAdapter):
                     ["docker", "exec", cfg.service, "which", binary],
                     capture_output=True,
                     timeout=cfg.connection_timeout,
+                    env=minimal_env(),
                 )
                 if chk.returncode != 0:
                     raise MariaDbError(
@@ -211,10 +211,9 @@ class MariaDbAdapter(DbAdapter):
 
         if cfg.use_docker:
             cmd = self._docker_prefix() + base_args
-            env = None
         else:
             cmd = base_args
-            env = self._host_env()
+        env = self._host_env()
 
         with out_file.open("wb") as f_out:
             subprocess.run(cmd, stdout=f_out, env=env, check=True)
@@ -264,10 +263,9 @@ class MariaDbAdapter(DbAdapter):
 
             if cfg.use_docker:
                 cmd = self._docker_prefix() + base_args
-                env = None
             else:
                 cmd = base_args
-                env = self._host_env()
+            env = self._host_env()
 
             with work_file.open("rb") as f_in:
                 subprocess.run(cmd, stdin=f_in, env=env, check=True)
@@ -315,6 +313,16 @@ class MariaDbAdapter(DbAdapter):
             f"CREATE DATABASE IF NOT EXISTS `{dbname}` "
             "CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
         )
+
+    def active_connections(self, dbname: str) -> int:
+        try:
+            rows = self._query_col(
+                "SELECT ID FROM information_schema.PROCESSLIST WHERE DB = %s AND ID <> CONNECTION_ID()",
+                (dbname,),
+            )
+        except MariaDbError:
+            return 0
+        return len(rows)
 
     def terminate_connections(self, dbname: str) -> int:
         try:

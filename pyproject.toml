@@ -21,6 +21,8 @@ classifiers = [
     "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: Implementation :: CPython",
     "Topic :: Database",
@@ -29,12 +31,12 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 
-requires-python = ">=3.13"
+requires-python = ">=3.13,<4.0"
 dependencies = [
     "typer (>=0.26.8,<0.27.0)",
     "questionary (>=2.1.1,<3.0.0)",
     "rich (>=15.0.0,<15.1.0)",
-    "psycopg[binary] (>=3.1,<4.0)",
+    "psycopg[binary] (>=3.3.6,<4.0)",
     "pymysql (>=1.2,<2.0)",
     "pymssql (>=2.3,<3.0)",
 ]
@@ -47,12 +49,16 @@ fr-bkp = "fuelrod_backup.cli:app"
 dev = [
     "pytest (>=9.0.2,<10.0.0)",
     "pytest-mock (>=3.15.1,<4.0.0)",
-    "ruff (>=0.15.8,<0.16.0)"
+    "ruff (>=0.15.8,<0.16.0)",
+    "click (>=8.5.1,<9.0.0)"
 ]
 
 
 [tool.poetry]
 packages = [{ include = "fuelrod_backup" }]
+
+[tool.pytest.ini_options]
+markers = ["integration: needs real database servers (see tests/integration/conftest.py)"]
 
 [tool.ruff]
 target-version = "py313"

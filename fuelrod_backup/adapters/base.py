@@ -98,6 +98,10 @@ class DbAdapter(ABC):
     def terminate_connections(self, dbname: str) -> int:
         return 0
 
+    def active_connections(self, dbname: str) -> int:
+        """Number of other sessions currently connected to *dbname* (0 when unknown)."""
+        return 0
+
     def drop_schema(self, dbname: str, schema: str) -> None:
         raise NotImplementedError(f"{type(self).__name__} does not support drop_schema")
 
