@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import gzip
-import os
 import re
-import shutil
 import subprocess
 import sys
-import tempfile
+import uuid
 from pathlib import Path
 
 from rich.console import Console
@@ -21,8 +18,10 @@ from .adapters import get_adapter
 from .adapters.base import DbAdapter
 from .config import Config
 from .crypto import CryptoError, decrypt_if_needed, is_encrypted
+from .fileutil import gunzip_to_temp
 from .notify import EXIT_ABORTED, EXIT_FAILURE, EXIT_OK, notify, report_delivery_errors
 from .output import emit, error, json_enabled, register
+from .procenv import minimal_env
 
 console = register(Console())
 
@@ -492,58 +491,7 @@ def _step_target_db(database: str, dry_run: bool, adapter: DbAdapter) -> str:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  Execute restore (PostgreSQL-specific streaming)
-# ──────────────────────────────────────────────────────────────────────────────
-
-def _execute_pg_restore(
-        backup_file: Path,
-        target_db: str,
-        restore_args: list[str],
-        cfg: Config,
-) -> None:
-    """Stream the dump file into pg_restore."""
-    base_args = [
-                    "-U", cfg.user,
-                    "-h", cfg.host,
-                    "-p", str(cfg.port),
-                    "-d", target_db,
-                    "-v",
-                ] + restore_args
-
-    if cfg.use_docker:
-        cmd = (
-                ["docker", "exec", "-i",
-                 "-e", f"PGPASSWORD={cfg.password}",
-                 "-e", f"PGUSER={cfg.user}",
-                 cfg.service,
-                 cfg.pg_restore_cmd]
-                + base_args
-        )
-        # Minimal env — password already injected via -e; don't leak host secrets.
-        env = {"PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")}
-    else:
-        cmd = [cfg.pg_restore_cmd] + base_args
-        env = os.environ.copy()
-        env["PGPASSWORD"] = cfg.password
-
-    if backup_file.suffix == ".gz":
-        with tempfile.NamedTemporaryFile(suffix=".dump", delete=False) as tmp_file:
-            tmp = Path(tmp_file.name)
-        try:
-            with gzip.open(backup_file, "rb") as gz_in, tmp.open("wb") as f_out:
-                shutil.copyfileobj(gz_in, f_out)
-            with tmp.open("rb") as f_in:
-                subprocess.run(cmd, stdin=f_in, env=env, check=True)
-        finally:
-            if tmp.exists():
-                tmp.unlink()
-    else:
-        with backup_file.open("rb") as f_in:
-            subprocess.run(cmd, stdin=f_in, env=env, check=True)
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-#  Public entry point
+#  Execute restore (PostgreSQL-specific)
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _execute_pg_restore_v2(
@@ -563,37 +511,36 @@ def _execute_pg_restore_v2(
     work_file = backup_file
     tmp_plain: Path | None = None
     ctr_path: str | None = None
+    # Minimal env; PGPASSWORD/PGUSER are forwarded into the container via bare `-e NAME`
+    # so the secret never appears in the host process list.
+    env = minimal_env({"PGPASSWORD": cfg.password, "PGUSER": cfg.user})
 
     try:
         if backup_file.suffix == ".gz":
-            with tempfile.NamedTemporaryFile(suffix=".dump", delete=False) as tmp_file:
-                tmp_plain = Path(tmp_file.name)
-            with gzip.open(backup_file, "rb") as gz_in, tmp_plain.open("wb") as f_out:
-                shutil.copyfileobj(gz_in, f_out)
+            tmp_plain = gunzip_to_temp(backup_file)
             work_file = tmp_plain
 
         if cfg.use_docker:
-            safe_stem = re.sub(r"[^A-Za-z0-9_.-]", "_", work_file.stem) or "dump"
-            ctr_path = f"/tmp/pg_restore_{safe_stem}.dump"  # noqa: S108
+            ctr_path = f"/tmp/pg_restore_{uuid.uuid4().hex}.dump"  # noqa: S108 — inside the container, unique per call
             subprocess.run(
                 ["docker", "cp", str(work_file), f"{cfg.service}:{ctr_path}"],
                 check=True,
+                env=minimal_env(),
             )
             subprocess.run(
                 [
                     "docker", "exec", "-i",
-                    "-e", f"PGPASSWORD={cfg.password}",
-                    "-e", f"PGUSER={cfg.user}",
+                    "-e", "PGPASSWORD",
+                    "-e", "PGUSER",
                     cfg.service,
                     cfg.pg_restore_cmd,
                     *base_args,
                     ctr_path,
                 ],
+                env=env,
                 check=True,
             )
         else:
-            env = os.environ.copy()
-            env["PGPASSWORD"] = cfg.password
             subprocess.run(
                 [cfg.pg_restore_cmd, *base_args, str(work_file)],
                 env=env,
@@ -604,6 +551,7 @@ def _execute_pg_restore_v2(
             subprocess.run(
                 ["docker", "exec", cfg.service, "rm", "-f", ctr_path],
                 check=False,
+                env=minimal_env(),
             )
         if tmp_plain and tmp_plain.exists():
             tmp_plain.unlink()

@@ -83,3 +83,22 @@ def test_pg_restore_docker_copies_temp_file_and_cleans_up(tmp_path, monkeypatch)
     assert calls[1]["cmd"][-1] == container_path
     assert calls[2]["cmd"] == ["docker", "exec", "postgres", "rm", "-f", container_path]
     assert calls[2]["kwargs"]["check"] is False
+
+
+def test_pg_restore_docker_keeps_password_out_of_argv_and_env_minimal(tmp_path, monkeypatch):
+    backup_file = tmp_path / "sample.dump"
+    backup_file.write_bytes(b"x")
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        "fuelrod_backup.restore.subprocess.run",
+        lambda cmd, **kw: calls.append({"cmd": cmd, "kwargs": kw}),
+    )
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "leak-me")
+    cfg = Config(user="postgres", password="secret", host="h", port=5432, service="pg", use_docker=True)
+
+    _execute_pg_restore_v2(backup_file, "db", [], cfg)
+
+    for call in calls:
+        assert "secret" not in " ".join(call["cmd"])
+        assert "AWS_SECRET_ACCESS_KEY" not in call["kwargs"]["env"]
+    assert calls[1]["kwargs"]["env"]["PGPASSWORD"] == "secret"
