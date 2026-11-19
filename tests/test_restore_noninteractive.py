@@ -6,8 +6,8 @@ import os
 from pathlib import Path
 from unittest.mock import MagicMock
 
-import click
 import pytest
+import typer
 
 from fuelrod_backup.config import Config, DbType
 from fuelrod_backup.restore import (
@@ -142,7 +142,7 @@ class TestNonInteractiveRestore:
         cfg = _cfg()
         cfg.base_dir = str(tmp_path)
         monkeypatch.setattr(cli_mod, "load_config", lambda *a, **k: cfg)
-        with pytest.raises((SystemExit, click.exceptions.Exit)):
+        with pytest.raises((SystemExit, typer.Exit)):
             cli_mod.restore(no_interactive=True, project="proj")
 
     def test_plan_only_without_yes(self, monkeypatch, tmp_path):
@@ -172,7 +172,7 @@ class TestNonInteractiveRestore:
         cfg = _cfg()
         cfg.base_dir = str(tmp_path)
         monkeypatch.setattr(cli_mod, "load_config", lambda *a, **k: cfg)
-        with pytest.raises((SystemExit, click.exceptions.Exit)):
+        with pytest.raises((SystemExit, typer.Exit)):
             cli_mod.restore(databases=["one", "two"])
 
 
