@@ -55,6 +55,9 @@ dev = [
 [tool.poetry]
 packages = [{ include = "fuelrod_backup" }]
 
+[tool.pytest.ini_options]
+markers = ["integration: needs real database servers (see tests/integration/conftest.py)"]
+
 [tool.ruff]
 target-version = "py313"
 line-length = 120
