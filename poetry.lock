@@ -13,6 +13,18 @@ files = [
 ]
 
 [[package]]
+name = "click"
+version = "8.5.1"
+description = "Composable command line interface toolkit"
+optional = false
+python-versions = ">=3.10"
+groups = ["dev"]
+files = [
+    {file = "click-8.5.1-py3-none-any.whl", hash = "sha256:8bb5376d2006950386f8c6427613334a2acadc5f559cb80e638d00b4df957e37"},
+    {file = "click-8.5.1.tar.gz", hash = "sha256:9bbfada76703fd1d784b83eea012e3e8c6a001a876543ef104fa56aaaeb072b4"},
+]
+
+[[package]]
 name = "colorama"
 version = "0.4.6"
 description = "Cross-platform colored terminal text."
@@ -515,4 +527,4 @@ files = [
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.13,<4.0"
-content-hash = "59ed13770e162d5354e53eec43586f8212b1a6da9e73238728f4d3dda3be534f"
+content-hash = "8bc05fc125c25a0d6be2b98b85207dac576ca291a8f122c5e8c603eea91dcb72"
