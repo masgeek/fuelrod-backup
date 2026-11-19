@@ -6,6 +6,7 @@ import re
 import subprocess
 import sys
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 from rich.console import Console
@@ -500,6 +501,62 @@ def _step_target_db(database: str, dry_run: bool, adapter: DbAdapter) -> str:
 #  Execute restore (PostgreSQL-specific)
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _guard_target(
+        cfg: Config,
+        adapter: DbAdapter,
+        target_db: str,
+        *,
+        interactive: bool,
+        force: bool,
+        safety_dump: bool,
+) -> None:
+    """
+    Restore guardrails: summarise what is about to be overwritten, refuse to restore
+    over active connections without consent, and optionally take a safety dump first.
+    """
+    try:
+        exists = adapter.db_exists(target_db)
+    except Exception:  # noqa: BLE001 — a failed probe must not block the restore itself
+        return
+    if not exists:
+        return
+
+    try:
+        tables = adapter.get_table_count(target_db)
+        size = adapter.get_db_size(target_db)
+    except Exception:  # noqa: BLE001
+        tables, size = "?", "?"
+    active = adapter.active_connections(target_db)
+
+    _section("Restore Guardrails")
+    console.print(f"  Target '{target_db}' already exists: {tables} table(s), {size}.")
+    console.print("  [yellow]Restoring will overwrite its current contents.[/]")
+
+    if active:
+        console.print(f"  [red]{active} active connection(s)[/] to '{target_db}'.")
+        if interactive:
+            if not questionary.confirm("Restore anyway?", default=False).ask():
+                console.print("[yellow]Aborted by user.[/]")
+                sys.exit(EXIT_ABORTED)
+        elif not force:
+            _die(f"Refusing to restore over {active} active connection(s) to '{target_db}'. Use --force to proceed.")
+
+    if interactive and not safety_dump:
+        safety_dump = bool(questionary.confirm(
+            "Take a safety dump of the current database first?", default=True
+        ).ask())
+    if safety_dump:
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_dir = Path(cfg.backup_dir) / target_db
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out = out_dir / f"{target_db}_pre_restore_{stamp}{adapter.dump_extension}"
+        console.print(f"  Safety dump → {out}")
+        try:
+            adapter.backup_db(target_db, out, include_schemas=[], exclude_schemas=[])
+        except Exception as exc:
+            _die(f"Safety dump failed ({exc}); restore aborted.")
+
+
 def _execute_pg_restore_v2(
         backup_file: Path,
         target_db: str,
@@ -637,6 +694,9 @@ def _perform_restore(
         role_args: list[str],
         jobs: int,
         extra_files: list[Path] | None = None,
+        interactive: bool = True,
+        force: bool = False,
+        safety_dump: bool = False,
 ) -> None:
     """
     Run the engine-specific restore and print the post-restore report.
@@ -644,6 +704,8 @@ def _perform_restore(
     *extra_files* are applied after the main dump, oldest first — used to layer
     an incremental chain on top of its base.
     """
+    _guard_target(cfg, adapter, target_db, interactive=interactive, force=force, safety_dump=safety_dump)
+
     console.print()
     console.print(f"  Restoring [bold]{backup_file.name}[/] → [bold]{target_db}[/]")
 
@@ -737,7 +799,20 @@ def _perform_restore(
     console.print(Panel(f"[bold green]RESTORE COMPLETE → {target_db}[/]", expand=False))
 
 
-def run_restore(
+def run_restore(cfg: Config, **kwargs) -> None:
+    """Restore a database, serialised per engine with backups by a run lock."""
+    from .lock import LockError, run_lock
+
+    if not cfg.base_dir:
+        _die(f"Backup directory not found: {cfg.base_dir}")
+    try:
+        with run_lock(cfg.base_dir, cfg.db_type.value, "restore"):
+            _run_restore(cfg, **kwargs)
+    except LockError as exc:
+        _die(str(exc))
+
+
+def _run_restore(
     cfg: Config,
     *,
     interactive: bool = True,
@@ -752,6 +827,8 @@ def run_restore(
     dry_run: bool = False,
     yes: bool = False,
     incremental_chain: bool = False,
+    force: bool = False,
+    safety_dump: bool = False,
 ) -> None:
     """Restore a database from a dump file.
 
@@ -772,6 +849,8 @@ def run_restore(
             dry_run=dry_run,
             yes=yes,
             incremental_chain=incremental_chain,
+            force=force,
+            safety_dump=safety_dump,
         )
         return
 
@@ -924,6 +1003,8 @@ def run_restore(
         role_args=role_args,
         jobs=jobs,
         extra_files=_resolve_chain(backup_file, incremental_chain, adapter),
+        interactive=True,
+        safety_dump=safety_dump,
     )
 
 
@@ -952,6 +1033,8 @@ def run_restore_noninteractive(
     dry_run: bool,
     yes: bool,
     incremental_chain: bool = False,
+    force: bool = False,
+    safety_dump: bool = False,
 ) -> None:
     """Restore without any prompt; every decision comes from the caller."""
     adapter = get_adapter(cfg)
@@ -1082,6 +1165,9 @@ def run_restore_noninteractive(
         role_args=role_args,
         jobs=jobs,
         extra_files=chain,
+        interactive=False,
+        force=force,
+        safety_dump=safety_dump,
     )
 
 

@@ -245,6 +245,14 @@ def restore(
                 help="After restoring the chosen base dump, apply every newer _inc dump in order.",
             ),
         ] = False,
+        force: Annotated[
+            bool,
+            typer.Option("--force", help="Restore even if the target database has active connections."),
+        ] = False,
+        safety_dump: Annotated[
+            bool,
+            typer.Option("--safety-dump", help="Dump the existing target database before overwriting it."),
+        ] = False,
         all_engines: Annotated[
             bool,
             typer.Option(
@@ -310,6 +318,8 @@ def restore(
                 dry_run=dry_run,
                 yes=yes,
                 incremental_chain=chain,
+                force=force,
+                safety_dump=safety_dump,
             )
         return
 
@@ -327,6 +337,8 @@ def restore(
         dry_run=dry_run,
         yes=yes,
         incremental_chain=chain,
+        force=force,
+        safety_dump=safety_dump,
     )
 
 

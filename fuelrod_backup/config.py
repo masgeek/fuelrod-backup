@@ -42,6 +42,11 @@ class Config:
     # last full dump; the base dump is kept until it is superseded.
     incremental: bool = False
     incremental_keep: int = 5
+    # Operations: retention profile, lifecycle hooks, size-trend warning
+    retention: str = ""            # RETENTION — e.g. "daily=7,weekly=4,monthly=12" (overrides KEEP_DAYS)
+    hook_pre_backup: str = ""      # PRE_BACKUP_HOOK — command; non-zero exit aborts the backup
+    hook_post_backup: str = ""     # POST_BACKUP_HOOK — command; failure only warns
+    size_warn_ratio: float = 0.5   # SIZE_WARN_RATIO — warn when a dump is < ratio x previous (0 = off)
     # Encryption at rest (age by default, gpg supported)
     encrypt: bool = False
     encrypt_tool: str = "age"
@@ -131,6 +136,17 @@ def _load_incremental(cfg: Config, get) -> None:
         cfg.incremental_keep = int(get("INCREMENTAL_KEEP", "5"))
     except ValueError:
         cfg.incremental_keep = 5
+
+
+def _load_ops(cfg: Config, get) -> None:
+    """Parse RETENTION / lifecycle hooks / SIZE_WARN_RATIO from any lookup callable."""
+    cfg.retention = get("RETENTION", "").strip()
+    cfg.hook_pre_backup = get("PRE_BACKUP_HOOK", "").strip()
+    cfg.hook_post_backup = get("POST_BACKUP_HOOK", "").strip()
+    try:
+        cfg.size_warn_ratio = max(0.0, float(get("SIZE_WARN_RATIO", "0.5")))
+    except ValueError:
+        cfg.size_warn_ratio = 0.5
 
 
 def _load_encryption(cfg: Config, get) -> None:
@@ -326,6 +342,7 @@ def load_config(config_file: Path | None = None, db_type_override: str | None = 
         cfg.days_to_keep = 7
 
     _load_incremental(cfg, _get)
+    _load_ops(cfg, _get)
     _load_encryption(cfg, _get)
     _load_remote(cfg, _get)
     _load_s3(cfg, _get)
@@ -373,6 +390,7 @@ def _load_prefixed_config(
     except ValueError:
         cfg.days_to_keep = 7
     _load_incremental(cfg, _get)
+    _load_ops(cfg, _get)
     _load_encryption(cfg, _get)
     _load_remote(cfg, _get)
     _load_s3(cfg, _get)

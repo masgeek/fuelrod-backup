@@ -63,6 +63,11 @@ def emit(payload: dict[str, Any]) -> None:
     print(json.dumps(payload, indent=2, default=str))
 
 
+def warn(message: str) -> None:
+    """Non-fatal warning on stderr (never corrupts JSON on stdout)."""
+    print(f"WARN: {message}", file=sys.stderr)
+
+
 def error(message: str) -> None:
     """
     Report a fatal message.

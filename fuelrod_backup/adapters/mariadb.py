@@ -314,6 +314,16 @@ class MariaDbAdapter(DbAdapter):
             "CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
         )
 
+    def active_connections(self, dbname: str) -> int:
+        try:
+            rows = self._query_col(
+                "SELECT ID FROM information_schema.PROCESSLIST WHERE DB = %s AND ID <> CONNECTION_ID()",
+                (dbname,),
+            )
+        except MariaDbError:
+            return 0
+        return len(rows)
+
     def terminate_connections(self, dbname: str) -> int:
         try:
             threads = self._query_col(

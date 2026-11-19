@@ -333,6 +333,13 @@ class PgRunner:
         )
         return int(result or 0)
 
+    def active_connections(self, dbname: str) -> int:
+        result = self._query_one(
+            "SELECT COUNT(*) FROM pg_stat_activity WHERE datname = %s AND pid <> pg_backend_pid()",
+            (dbname,),
+        )
+        return int(result or 0)
+
     def drop_db(self, dbname: str) -> None:
         self.terminate_connections(dbname)
         self._execute(

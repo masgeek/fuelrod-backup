@@ -283,6 +283,17 @@ class MssqlAdapter(DbAdapter):
         _validate_identifier(dbname, "database name")
         self._execute(f"CREATE DATABASE [{dbname}]", "master")
 
+    def active_connections(self, dbname: str) -> int:
+        _validate_identifier(dbname, "database name")
+        try:
+            return len(self._query_col(
+                "SELECT CAST(spid AS NVARCHAR(10)) FROM sys.sysprocesses "
+                "WHERE dbid = DB_ID(%s) AND spid <> @@SPID",
+                (dbname,),
+            ))
+        except MssqlError:
+            return 0
+
     def terminate_connections(self, dbname: str) -> int:
         _validate_identifier(dbname, "database name")
         try:
