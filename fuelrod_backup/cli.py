@@ -12,6 +12,7 @@ from rich.console import Console
 from rich.panel import Panel
 
 from .config import DbType, load_all_configs, load_config
+from .engine_select import load_config_choosing_engine as _choose_cfg
 from .notify import EXIT_FAILURE, EXIT_USAGE
 from .output import enable_json, error, json_enabled, register
 
@@ -171,7 +172,7 @@ def backup(
         )
         return
 
-    cfg = load_config(config_file, db_type_override=db_type)
+    cfg = _choose_cfg(config_file, db_type, interactive=not no_interactive and not as_json, loader=load_config)
     _apply_docker_override(cfg, use_docker)
     if encrypt is not None:
         cfg.encrypt = encrypt
@@ -196,7 +197,10 @@ def restore(
         ] = False,
         project: Annotated[
             str | None,
-            typer.Option("--project", "-p", help="Project/group folder under BASE_DIR (omit when BASE_DIR/<engine> exists)."),
+            typer.Option(
+                "--project", "-p",
+                help="Project/group folder under BASE_DIR (omit when BASE_DIR/<engine> exists).",
+            ),
         ] = None,
         databases: Annotated[
             list[str],
@@ -256,7 +260,8 @@ def restore(
     """Restore a database from a dump file (postgres | mariadb | mssql).
 
     Interactive by default. With --no-interactive every prompt is replaced by
-    an explicit option: --db is required (--project only when backups sit under a project folder), --file defaults to the
+    an explicit option: --db is required (--project only for a project-folder layout),
+    --file defaults to the
     latest backup, and --yes is required to actually execute (otherwise the
     plan is printed and nothing is changed).
     """
@@ -285,7 +290,7 @@ def restore(
     elif len(databases) > 1 and not no_interactive:
         _fail("Interactive restore handles one database at a time.", EXIT_USAGE)
 
-    cfg = load_config(config_file, db_type_override=db_type)
+    cfg = _choose_cfg(config_file, db_type, interactive=not no_interactive and not as_json, loader=load_config)
     _apply_docker_override(cfg, use_docker)
 
     if len(databases) > 1:
@@ -436,7 +441,7 @@ def drop(
 
     _enable_json(as_json)
     _validate_db_type(db_type)
-    cfg = load_config(config_file, db_type_override=db_type)
+    cfg = _choose_cfg(config_file, db_type, interactive=not as_json, loader=load_config)
     _apply_docker_override(cfg, use_docker)
     run_drop(cfg, disconnect_only=disconnect_only, db_name=db)
 
@@ -457,7 +462,7 @@ def create(
 
     _enable_json(as_json)
     _validate_db_type(db_type)
-    cfg = load_config(config_file, db_type_override=db_type)
+    cfg = _choose_cfg(config_file, db_type, interactive=not as_json, loader=load_config)
     _apply_docker_override(cfg, use_docker)
     run_create(cfg)
 
@@ -473,7 +478,7 @@ def test_connection(
     from .adapters import get_adapter
 
     _validate_db_type(db_type)
-    cfg = load_config(config_file, db_type_override=db_type)
+    cfg = _choose_cfg(config_file, db_type, interactive=not as_json, loader=load_config)
     _apply_docker_override(cfg, use_docker)
 
     _enable_json(as_json)

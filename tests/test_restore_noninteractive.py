@@ -185,3 +185,12 @@ class TestDirectEngineDir:
         assert _direct_engine_dir(cfg) is None
         (tmp_path / "postgres" / "app").mkdir(parents=True)
         assert _direct_engine_dir(cfg) == (tmp_path / "postgres").resolve()
+
+
+def test_available_engines_lists_only_existing_folders(tmp_path):
+    from fuelrod_backup.engine_select import available_engines
+
+    (tmp_path / "mariadb").mkdir()
+    (tmp_path / "postgres").mkdir()
+    (tmp_path / "other").mkdir()
+    assert available_engines(tmp_path) == ["postgres", "mariadb"]
