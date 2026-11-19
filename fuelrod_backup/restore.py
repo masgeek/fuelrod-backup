@@ -220,6 +220,12 @@ def _step_select_top_dir(cfg: Config) -> Path:
     return top_dir
 
 
+def _direct_engine_dir(cfg: Config) -> Path | None:
+    """BASE_DIR/<engine> when backups are written straight under BASE_DIR (no project level)."""
+    engine_dir = Path(cfg.base_dir).resolve() / cfg.db_type.value
+    return engine_dir if engine_dir.is_dir() and not engine_dir.is_symlink() else None
+
+
 def _resolve_engine_dir(top_dir: Path, db_type_value: str) -> Path:
     """Resolve top_dir/<db_type> and die clearly if it doesn't exist."""
     engine_dir = top_dir / db_type_value
@@ -781,11 +787,12 @@ def run_restore(
     # Step 1 — Connection
     _step_connection(cfg, adapter)
 
-    # Step 2 — Select top-level project/group directory
-    top_dir = _step_select_top_dir(cfg)
-
-    # Step 2b — Auto-resolve engine sub-directory from db_type config
-    engine_dir = _resolve_engine_dir(top_dir, cfg.db_type.value)
+    # Step 2 — BASE_DIR/<engine> is what `backup` writes; use it directly when present,
+    # otherwise let the user pick a project/group folder that contains <engine>.
+    engine_dir = _direct_engine_dir(cfg)
+    if engine_dir is None:
+        top_dir = _step_select_top_dir(cfg)
+        engine_dir = _resolve_engine_dir(top_dir, cfg.db_type.value)
     console.print(f"  Engine dir : [dim]{engine_dir}[/]")
 
     # Step 3 — Select database folder
@@ -955,8 +962,6 @@ def run_restore_noninteractive(
         _die(f"Backup directory not found: {cfg.base_dir}")
     if scope not in _SCOPE_ARGS:
         _die(f"Invalid scope {scope!r}. Use one of: {', '.join(_SCOPE_ARGS)}.")
-    if not project:
-        _die("--project is required with --no-interactive (the top-level folder under BASE_DIR).")
     if not database:
         _die("--db is required with --no-interactive (the database folder name).")
 
@@ -966,12 +971,16 @@ def run_restore_noninteractive(
     ))
 
     base = Path(cfg.base_dir).resolve()
-    top_dir = (base / project).resolve()
-    _validate_resolved_path(top_dir, base)
-    if not top_dir.is_dir():
-        _die(f"Project directory not found: {top_dir}")
-
-    engine_dir = _resolve_engine_dir(top_dir, cfg.db_type.value)
+    if project:
+        top_dir = (base / project).resolve()
+        _validate_resolved_path(top_dir, base)
+        if not top_dir.is_dir():
+            _die(f"Project directory not found: {top_dir}")
+        engine_dir = _resolve_engine_dir(top_dir, cfg.db_type.value)
+    else:
+        engine_dir = _direct_engine_dir(cfg)
+        if engine_dir is None:
+            _die(f"--project is required: no '{cfg.db_type.value}' folder directly under {base}.")
     db_dir = (engine_dir / database).resolve()
     _validate_resolved_path(db_dir, engine_dir)
     if not db_dir.is_dir():

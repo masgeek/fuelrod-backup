@@ -191,12 +191,12 @@ def restore(
             bool,
             typer.Option(
                 "--no-interactive", "-n",
-                help="Skip all wizard prompts. Requires --project and --db; needs --yes to execute.",
+                help="Skip all wizard prompts. Requires --db; needs --yes to execute.",
             ),
         ] = False,
         project: Annotated[
             str | None,
-            typer.Option("--project", "-p", help="Project/group folder under BASE_DIR."),
+            typer.Option("--project", "-p", help="Project/group folder under BASE_DIR (omit when BASE_DIR/<engine> exists)."),
         ] = None,
         databases: Annotated[
             list[str],
@@ -256,7 +256,7 @@ def restore(
     """Restore a database from a dump file (postgres | mariadb | mssql).
 
     Interactive by default. With --no-interactive every prompt is replaced by
-    an explicit option: --project and --db are required, --file defaults to the
+    an explicit option: --db is required (--project only when backups sit under a project folder), --file defaults to the
     latest backup, and --yes is required to actually execute (otherwise the
     plan is printed and nothing is changed).
     """

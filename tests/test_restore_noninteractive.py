@@ -174,3 +174,14 @@ class TestNonInteractiveRestore:
         monkeypatch.setattr(cli_mod, "load_config", lambda *a, **k: cfg)
         with pytest.raises((SystemExit, click.exceptions.Exit)):
             cli_mod.restore(databases=["one", "two"])
+
+
+class TestDirectEngineDir:
+    def test_base_dir_engine_layout_is_used_without_project(self, tmp_path):
+        from fuelrod_backup.restore import _direct_engine_dir
+
+        cfg = Config(db_type=DbType.POSTGRES)
+        cfg.base_dir = str(tmp_path)
+        assert _direct_engine_dir(cfg) is None
+        (tmp_path / "postgres" / "app").mkdir(parents=True)
+        assert _direct_engine_dir(cfg) == (tmp_path / "postgres").resolve()
