@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from .config import DbType
+from .fileutil import human_size
 
 _ARTIFACT_PATTERNS = ("*.dump", "*.dump.gz", "*.sql", "*.sql.gz", "*.zip", "*.bak", "*.age", "*.gpg")
 
@@ -81,7 +82,7 @@ def size_anomaly(new_file: Path, ratio: float) -> str | None:
     prev_size = prev.stat().st_size
     if prev_size > 0 and new_size < prev_size * ratio:
         return (
-            f"{new_file.name} is {new_size} bytes, under {ratio:.0%} of the previous backup "
-            f"{prev.name} ({prev_size} bytes) — possible silent failure"
+            f"{new_file.name} is {human_size(new_size)}, under {ratio:.0%} of the previous backup "
+            f"{prev.name} ({human_size(prev_size)}) — possible silent failure"
         )
     return None

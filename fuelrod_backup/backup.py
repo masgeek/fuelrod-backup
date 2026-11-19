@@ -24,6 +24,7 @@ from .adapters.base import DbAdapter
 from .catalog import size_anomaly
 from .config import Config
 from .crypto import CryptoError, encrypt_file, validate_config
+from .fileutil import human_size
 from .lock import LockError, run_lock
 from .notify import EXIT_ABORTED, EXIT_FAILURE, EXIT_OK, notify, report_delivery_errors
 from .output import emit, error, json_enabled, register, warn
@@ -407,7 +408,7 @@ def _backup_one(
             prune_incremental(db_dir, cfg.incremental_keep)
 
     size = dump_file.stat().st_size
-    human = f"{size / 1024 / 1024:.1f} MB" if size > 1024 * 1024 else f"{size / 1024:.1f} KB"
+    human = human_size(size)
 
     if task_id is not None:
         progress.update(task_id, description=f"[green]✓ {db}[/]  [dim]{human}[/]", completed=1)

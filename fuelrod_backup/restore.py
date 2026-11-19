@@ -19,7 +19,7 @@ from .adapters import get_adapter
 from .adapters.base import DbAdapter
 from .config import Config
 from .crypto import CryptoError, decrypt_if_needed, is_encrypted
-from .fileutil import gunzip_to_temp
+from .fileutil import gunzip_to_temp, human_size
 from .notify import EXIT_ABORTED, EXIT_FAILURE, EXIT_OK, notify, report_delivery_errors
 from .output import emit, error, json_enabled, register
 from .procenv import minimal_env
@@ -54,10 +54,7 @@ def _die(msg: str) -> None:
 
 
 def _human_size(path: Path) -> str:
-    size = path.stat().st_size
-    if size > 1024 * 1024:
-        return f"{size / 1024 / 1024:.1f} MB"
-    return f"{size / 1024:.1f} KB"
+    return human_size(path.stat().st_size)
 
 
 def _validate_resolved_path(resolved: Path, expected_base: Path) -> None:

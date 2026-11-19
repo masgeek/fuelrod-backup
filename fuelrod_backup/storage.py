@@ -25,6 +25,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from .config import Config
+from .fileutil import human_size
 from .notify import EXIT_FAILURE, EXIT_OK
 from .output import emit, error, json_enabled, register
 
@@ -80,10 +81,7 @@ def _die(msg: str) -> None:
 
 
 def _human_size(path: Path) -> str:
-    size = path.stat().st_size
-    if size >= 1024 * 1024:
-        return f"{size / 1024 / 1024:.1f} MB"
-    return f"{size / 1024:.1f} KB"
+    return human_size(path.stat().st_size)
 
 
 def parse_remote(spec: str) -> Remote:

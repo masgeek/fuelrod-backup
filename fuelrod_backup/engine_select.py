@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from . import prompt as questionary
@@ -31,7 +32,7 @@ def load_config_choosing_engine(
 ) -> Config:
     """load_config, but ask which engine to use when none was given and several are available."""
     cfg = loader(config_file, db_type_override=db_type)
-    if db_type is not None or not interactive:
+    if db_type is not None or not interactive or not sys.stdin.isatty():
         return cfg
     engines = candidate_engines(cfg, config_file)
     if len(engines) < 2:

@@ -14,7 +14,7 @@ from rich.panel import Panel
 from .config import DbType, load_all_configs, load_config
 from .engine_select import load_config_choosing_engine as _choose_cfg
 from .notify import EXIT_FAILURE, EXIT_USAGE
-from .output import enable_json, error, json_enabled, register
+from .output import emit, enable_json, error, json_enabled, register
 
 _VERSION = _pkg_version("fuelrod-backup")
 
@@ -342,8 +342,105 @@ def restore(
     )
 
 
+def _engine_cfgs(config_file: Path | None, db_type: str | None, use_docker: bool | None = None) -> list:
+    """One config per configured engine, or just *db_type* when given. Never prompts."""
+    if db_type is not None:
+        cfgs = [load_config(config_file, db_type_override=db_type)]
+    else:
+        cfgs = load_all_configs(config_file)
+    for c in cfgs:
+        _apply_docker_override(c, use_docker)
+    return cfgs
+
+
+@app.command("list")
+def list_cmd(
+        engine: Annotated[
+            str | None,
+            typer.Option("--engine", "-e", help="Restrict to one engine: postgres | mariadb | mssql."),
+        ] = None,
+        database: Annotated[
+            str | None,
+            typer.Option("--db", "-d", help="Restrict to one database folder."),
+        ] = None,
+        as_json: Annotated[bool, _JSON_OPT] = False,
+        config_file: Annotated[Path | None, _CONFIG_OPT] = None,
+) -> None:
+    """List backups under BASE_DIR per engine and database (size, age, encrypted, incremental)."""
+    from .catalog import list_backups
+    from .fileutil import human_size
+
+    _enable_json(as_json)
+    _validate_db_type(engine)
+    cfg = load_config(config_file)
+    if not cfg.base_dir or not Path(cfg.base_dir).is_dir():
+        _fail(f"Backup directory not found: {cfg.base_dir}", EXIT_FAILURE)
+    entries = list_backups(cfg.base_dir, [engine] if engine else None, database)
+    if json_enabled():
+        emit({"command": "list", "base_dir": cfg.base_dir, "count": len(entries),
+                     "backups": [e.to_dict() for e in entries]})
+        return
+    if not entries:
+        console.print(f"[yellow]No backups found under {cfg.base_dir}.[/]")
+        return
+    import time
+
+    from rich.table import Table
+
+    table = Table(show_header=True, header_style="bold")
+    for col in ("Engine", "Database", "File", "Size", "Age", "Flags"):
+        table.add_column(col, overflow="fold")
+    for e in entries:
+        flags = ",".join(f for f, on in (("enc", e.encrypted), ("gz", e.compressed), ("inc", e.incremental)) if on)
+        size = human_size(e.size)
+        age = f"{(time.time() - e.mtime) / 86400:.1f}d"
+        table.add_row(e.engine, e.database, Path(e.file).name, size, age, flags)
+    console.print(table)
+    console.print(f"  {len(entries)} backup(s)")
+
+
+@app.command("schedule")
+def schedule_cmd(
+        cron: Annotated[str, typer.Option("--cron", help="Cron expression, e.g. '0 2 * * *'.")] = "0 2 * * *",
+        log_file: Annotated[
+            str, typer.Option("--log", help="File the job appends its output to.")
+        ] = "fuelrod-backup.log",
+        apply: Annotated[bool, typer.Option("--apply", help="Install the job instead of only printing it.")] = False,
+        db_type: Annotated[str | None, _DB_TYPE_OPT] = None,
+        config_file: Annotated[Path | None, _CONFIG_OPT] = None,
+) -> None:
+    """Generate (or with --apply, install) a scheduled non-interactive backup.
+
+    Prints a crontab line on Linux/macOS or a schtasks command on Windows.
+    """
+    import subprocess
+
+    from . import schedule as sched
+
+    _validate_db_type(db_type)
+    command = sched.build_command(db_type, str(config_file.resolve()) if config_file else None)
+    try:
+        text, argv = sched.render(cron, command, log_file)
+    except ValueError as exc:
+        _fail(str(exc), EXIT_USAGE)
+    console.print(text, markup=False, soft_wrap=True)
+    if not apply:
+        console.print()
+        console.print("Re-run with --apply to install it.")
+        return
+    try:
+        if argv:
+            subprocess.run(argv, check=True)  # noqa: S603
+        else:
+            sched.install_cron(text)
+    except (subprocess.CalledProcessError, OSError) as exc:
+        _fail(f"Could not install the schedule: {exc}", EXIT_FAILURE)
+    console.print("[green]Schedule installed.[/]")
+
+
 @app.command("doctor")
 def doctor(
+        db_type: Annotated[str | None, _DB_TYPE_OPT] = None,
         skip_connection: Annotated[
             bool,
             typer.Option("--skip-connection", help="Skip the live database connection test."),
@@ -361,8 +458,17 @@ def doctor(
     from .doctor import run_doctor
 
     _enable_json(as_json)
-    cfg = load_config(config_file)
-    code = run_doctor(cfg, skip_connection=skip_connection)
+    _validate_db_type(db_type)
+    cfgs = _engine_cfgs(config_file, db_type)
+    if len(cfgs) == 1:
+        code = run_doctor(cfgs[0], skip_connection=skip_connection)
+    else:
+        payloads: list = []
+        code = 0
+        for c in cfgs:
+            code = run_doctor(c, skip_connection=skip_connection, collect=payloads if json_enabled() else None) or code
+        if json_enabled():
+            emit({"command": "doctor", "status": "fail" if code else "ok", "engines": payloads})
     if code:
         raise typer.Exit(code=code)
 
@@ -397,6 +503,14 @@ def verify(
             int | None,
             typer.Option("--parallel", "-j", help="Concurrent workers. Default: min(8, CPU count)."),
         ] = None,
+        restore_test: Annotated[
+            bool,
+            typer.Option(
+                "--restore-test",
+                help="Restore the newest full backup per database into a throwaway database and sanity-check it.",
+            ),
+        ] = False,
+        db_type: Annotated[str | None, _DB_TYPE_OPT] = None,
         as_json: Annotated[bool, _JSON_OPT] = False,
         config_file: Annotated[Path | None, _CONFIG_OPT] = None,
 ) -> None:
@@ -409,7 +523,16 @@ def verify(
     from .verify import run_verify
 
     _enable_json(as_json)
-    cfg = load_config(config_file)
+    _validate_db_type(db_type)
+    if restore_test:
+        from .restoretest import run_restore_test
+
+        cfg = _choose_cfg(config_file, engine or db_type, interactive=not as_json, loader=load_config)
+        code = run_restore_test(cfg, database=databases[0] if databases else None)
+        if code:
+            raise typer.Exit(code=code)
+        return
+    cfg = load_config(config_file, db_type_override=db_type)
     if engine:
         _validate_db_type(engine)
     code = run_verify(
@@ -486,14 +609,26 @@ def test_connection(
         config_file: Annotated[Path | None, _CONFIG_OPT] = None,
         as_json: Annotated[bool, _JSON_OPT] = False,
 ) -> None:
-    """Test the database connection and print resolved settings."""
+    """Test the connection for every configured engine and print resolved settings.
+
+    Use --db-type to test only one engine.
+    """
+    _validate_db_type(db_type)
+    _enable_json(as_json)
+    cfgs = _engine_cfgs(config_file, db_type, use_docker)
+
+    results = [_test_one(c, use_docker, as_json) for c in cfgs]
+    if as_json:
+        import json
+        print(json.dumps(results[0] if len(results) == 1 else {"engines": results}, indent=2))
+    if not all(r["connection_successful"] for r in results):
+        raise typer.Exit(code=1)
+
+
+def _test_one(cfg, use_docker: bool | None, as_json: bool) -> dict:
+    """Test one engine's connection; prints human output unless *as_json*. Returns the JSON payload."""
     from .adapters import get_adapter
 
-    _validate_db_type(db_type)
-    cfg = _choose_cfg(config_file, db_type, interactive=not as_json, loader=load_config)
-    _apply_docker_override(cfg, use_docker)
-
-    _enable_json(as_json)
     if not as_json:
         pass_hint = (
             f"{'*' * min(len(cfg.password), 6)}  ({len(cfg.password)} chars)"
@@ -503,6 +638,7 @@ def test_connection(
         docker_override = " [yellow](CLI override)[/]" if use_docker is not None else ""
 
         console.print()
+        console.rule(f"[bold cyan]{cfg.db_type.value}[/]")
         console.print("[bold]Resolved settings:[/]")
         console.print(f"  Config source : {source}")
         console.print(f"  DB type       : [cyan]{cfg.db_type.value}[/]")
@@ -516,33 +652,24 @@ def test_connection(
         console.print(f"  Retain        : {cfg.days_to_keep} days")
         console.print()
 
-    adapter = get_adapter(cfg)
+    payload = {
+        "config_source": str(cfg.config_source) if cfg.config_source else None,
+        "db_type": cfg.db_type.value,
+        "mode": "docker" if cfg.use_docker else "direct",
+        "host": f"{cfg.host}:{cfg.port}",
+        "user": cfg.user,
+        "password_set": bool(cfg.password),
+        "backup_dir": str(cfg.backup_dir),
+    }
     try:
-        adapter.check_connection()
-        if as_json:
-            import json
-            print(json.dumps({
-                "config_source": str(cfg.config_source) if cfg.config_source else None,
-                "db_type": cfg.db_type.value,
-                "mode": "docker" if cfg.use_docker else "direct",
-                "host": f"{cfg.host}:{cfg.port}",
-                "user": cfg.user,
-                "password_set": bool(cfg.password),
-                "backup_dir": cfg.backup_dir,
-                "connection_successful": True,
-            }, indent=2))
-        else:
-            console.print("[bold green]✓ Connection successful.[/]")
-    except Exception as exc:
-        if as_json:
-            import json
-            print(json.dumps({
-                "connection_successful": False,
-                "error": str(exc),
-            }, indent=2))
-        else:
+        get_adapter(cfg).check_connection()
+    except Exception as exc:  # noqa: BLE001 — any failure is a failed test, reported per engine
+        if not as_json:
             console.print(f"[bold red]✗ Connection failed:[/] {exc}")
-        raise typer.Exit(code=1)
+        return {**payload, "connection_successful": False, "error": str(exc)}
+    if not as_json:
+        console.print("[bold green]✓ Connection successful.[/]")
+    return {**payload, "connection_successful": True}
 
 
 @app.command("init")

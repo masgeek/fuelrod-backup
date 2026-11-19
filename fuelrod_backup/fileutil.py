@@ -19,3 +19,13 @@ def gunzip_to_temp(src: Path, suffix: str = ".dump") -> Path:
         tmp.unlink(missing_ok=True)
         raise
     return tmp
+
+
+def human_size(num_bytes: int | float) -> str:
+    """Format a byte count as B / KB / MB / GB / TB (1024-based), e.g. ``1.5 GB``."""
+    size = float(num_bytes)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024:
+            return f"{int(size)} B" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} TB"
