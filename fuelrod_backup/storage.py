@@ -178,25 +178,25 @@ def list_remotes() -> list[str]:
 def default_remote(cfg: Config) -> str | None:
     """
     Remote to use when the caller does not pass one.
-    
+
     Generic remote (REMOTE) takes precedence, followed by S3 settings.
     """
     if cfg.remote:
         return cfg.remote
-    
+
     # If a named remote is configured (S3_REMOTE), use it as the prefix
     prefix = cfg.s3_remote if cfg.s3_remote else "s3"
-    
+
     if cfg.s3_bucket:
         target = f"{prefix}:{cfg.s3_bucket}"
         if cfg.s3_prefix:
             target += f"/{cfg.s3_prefix.strip('/')}"
         return target
-        
+
     if cfg.s3_remote:
         # A named remote (created by init) may carry its own bucket/path.
         return f"{cfg.s3_remote}:"
-        
+
     return None
 
 
@@ -314,13 +314,14 @@ def run_sync(
             db_dirs = sorted([d for d in base_dir.iterdir() if d.is_dir() and not d.is_symlink()])
             if not db_dirs:
                 _die(f"No backup folders found in {base_dir}")
-            
+
             table = Table(show_header=True, header_style="bold")
             table.add_column("#", style="dim", width=4)
             table.add_column("Folder", min_width=24)
             table.add_column("Backups", justify="right")
             for i, d in enumerate(db_dirs):
-                count = sum(len(list(d.rglob(pat))) for pat in ["*.dump", "*.dump.gz", "*.sql", "*.sql.gz", "*.zip", "*.bak"])
+                patterns = ["*.dump", "*.dump.gz", "*.sql", "*.sql.gz", "*.zip", "*.bak"]
+                count = sum(len(list(d.rglob(pat))) for pat in patterns)
                 table.add_row(str(i), d.name, str(count))
             console.print(table)
 
@@ -332,7 +333,7 @@ def run_sync(
                 schemas = selected
 
             if since is None or until is None:
-                val = q.text("Date range in days (since, until) [e.g. '30, 0' for last 30 days, blank for all]", 
+                val = q.text("Date range in days (since, until) [e.g. '30, 0' for last 30 days, blank for all]",
                              default=f"{since or ''}, {until or ''}").ask()
                 if val:
                     parts = [p.strip() for p in val.split(",")]
@@ -413,7 +414,7 @@ def run_sync(
 
     for pat in patterns:
         transfer_args += ["--include", pat]
-    
+
     if schemas:
         for s in schemas:
             transfer_args += ["--include", f"{s}/**"]

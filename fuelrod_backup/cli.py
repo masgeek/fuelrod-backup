@@ -791,13 +791,13 @@ def _update_config_keys(output: Path, keys: dict[str, str]) -> None:
 
 def _init_s3_remote(q, output: Path, updating: bool, existing_raw: dict[str, str]) -> dict[str, str]:
     from . import rclone_config
-    
+
     console.print()
     console.rule("[bold cyan]Off-site S3 Target[/]")
-    
+
     ex_remote = existing_raw.get("S3_REMOTE", "s3-backup")
     remote_name = q.text("rclone remote name (S3_REMOTE)", default=ex_remote).ask() or ex_remote
-    
+
     ex_bucket = existing_raw.get("S3_BUCKET", "")
     bucket = q.text("S3 bucket (S3_BUCKET)", default=ex_bucket).ask() or ex_bucket
     if not bucket:
@@ -806,7 +806,7 @@ def _init_s3_remote(q, output: Path, updating: bool, existing_raw: dict[str, str
 
     ex_prefix = existing_raw.get("S3_PREFIX", "")
     prefix = q.text("S3 key prefix (S3_PREFIX)", default=ex_prefix).ask() or ex_prefix
-    
+
     ex_provider = existing_raw.get("S3_PROVIDER", "")
     provider_choice = q.select(
         "S3 provider",
@@ -817,16 +817,16 @@ def _init_s3_remote(q, output: Path, updating: bool, existing_raw: dict[str, str
 
     ex_region = existing_raw.get("S3_REGION", "")
     region = q.text("S3 region (S3_REGION)", default=ex_region).ask() or ex_region
-    
+
     ex_endpoint = existing_raw.get("S3_ENDPOINT", "")
     endpoint = q.text("S3 endpoint (S3_ENDPOINT) [leave blank for AWS]", default=ex_endpoint).ask() or ex_endpoint
 
     console.print("\n  S3 credentials can be stored in rclone config or .backup file.")
     use_env_auth = q.confirm("Store keys in rclone config? (secrets will NOT be in .backup)", default=True).ask()
-    
+
     ex_access = existing_raw.get("S3_ACCESS_KEY_ID", "")
     ex_secret = existing_raw.get("S3_SECRET_ACCESS_KEY", "")
-    
+
     access_key = q.text("Access Key ID (S3_ACCESS_KEY_ID)", default=ex_access).ask() or ex_access
     secret_key = q.password("Secret Access Key (S3_SECRET_ACCESS_KEY)", default=ex_secret).ask() or ex_secret
 
@@ -1072,7 +1072,7 @@ def _init_multi_engine(q, output: Path, updating: bool, existing_raw: dict[str, 
             ],
             default="s3",
         ).ask()
-        
+
         if remote_type == "s3":
             s3_keys = _init_s3_remote(q, output, updating, existing_raw)
             for k, v in s3_keys.items():
@@ -1282,7 +1282,7 @@ def _init_single_engine(q, output: Path, updating: bool, existing_cfg, existing_
             ],
             default="s3",
         ).ask()
-        
+
         if remote_type == "s3":
             s3_keys = _init_s3_remote(q, output, updating, existing_raw)
             for k, v in s3_keys.items():

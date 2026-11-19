@@ -296,7 +296,7 @@ def check_rclone(cfg: Config, report: Report) -> None:
             "Only needed for sync — install from https://rclone.org/install/",
         )
         return
-    
+
     try:
         remotes = subprocess.run(
             ["rclone", "listremotes"], capture_output=True, timeout=15, check=False
