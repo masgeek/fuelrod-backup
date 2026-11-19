@@ -616,6 +616,9 @@ def _init_generic_remote(q, output: Path, updating: bool, existing_raw: dict[str
     ).ask() or ex_remote
     return {"REMOTE": remote} if remote else {}
 
+
+def _update_config_keys(output: Path, keys: dict[str, str]) -> None:
+    """Merge *keys* into the config file at *output*, preserving other lines."""
     lines = output.read_text(encoding="utf-8").splitlines()
     new_lines = []
     set_keys = set()
@@ -640,6 +643,7 @@ def _init_generic_remote(q, output: Path, updating: bool, existing_raw: dict[str
 
     output.write_text("\n".join(new_lines), encoding="utf-8")
     output.chmod(0o600)
+
 
 def _init_s3_remote(q, output: Path, updating: bool, existing_raw: dict[str, str]) -> dict[str, str]:
     from . import rclone_config
