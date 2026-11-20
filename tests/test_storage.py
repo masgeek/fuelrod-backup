@@ -160,7 +160,13 @@ class TestRunSync:
         calls: list = []
         self._patch(monkeypatch, calls)
 
-        assert run_sync(_cfg(tree), remote="s3:bucket/x", delete_local=True, interactive=False, include_patterns=["*.sql.gz"]) == 0
+        assert run_sync(
+
+            _cfg(tree), remote="s3:bucket/x", delete_local=True, interactive=False,
+
+            include_patterns=["*.sql.gz"],
+
+        ) == 0
 
         assert any(c[1] == "copy" for c in calls)
         assert not (tree / "postgres" / "proj" / "postgres" / "app" / "app_20260101.sql.gz").exists()
@@ -169,7 +175,13 @@ class TestRunSync:
         calls: list = []
         self._patch(monkeypatch, calls)
 
-        run_sync(_cfg(tree), remote="s3:bucket/x", delete_local=False, interactive=False, include_patterns=["*.sql.gz"])
+        run_sync(
+
+            _cfg(tree), remote="s3:bucket/x", delete_local=False, interactive=False,
+
+            include_patterns=["*.sql.gz"],
+
+        )
 
         assert (tree / "postgres" / "proj" / "postgres" / "app" / "app_20260101.sql.gz").exists()
 
@@ -178,7 +190,10 @@ class TestRunSync:
         self._patch(monkeypatch, calls, copy_rc=1)
 
         with pytest.raises(SystemExit) as exc:
-            run_sync(_cfg(tree), remote="s3:bucket/x", delete_local=True, interactive=False, include_patterns=["*.sql.gz"])
+            run_sync(
+                _cfg(tree), remote="s3:bucket/x", delete_local=True, interactive=False,
+                include_patterns=["*.sql.gz"],
+            )
 
         assert exc.value.code == 1
         assert (tree / "postgres" / "proj" / "postgres" / "app" / "app_20260101.sql.gz").exists(), \
@@ -193,7 +208,13 @@ class TestRunSync:
         monkeypatch.setattr(storage, "rclone_available", lambda: True)
         monkeypatch.setattr(storage.subprocess, "run", fake_run)
 
-        assert run_sync(_cfg(tree), remote="s3:bucket/x", delete_local=False, interactive=False, include_patterns=["*.sql.gz"]) == 0
+        assert run_sync(
+
+            _cfg(tree), remote="s3:bucket/x", delete_local=False, interactive=False,
+
+            include_patterns=["*.sql.gz"],
+
+        ) == 0
 
     def test_no_matching_files_is_a_success(self, monkeypatch, tmp_path):
         monkeypatch.setattr(storage, "rclone_available", lambda: True)

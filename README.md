@@ -121,7 +121,7 @@ The wizard navigates the backup directory in four steps:
 3. **Database** — pick the database folder within the engine directory
 4. **Backup file** — pick from files in that database folder only
 
-- `--no-interactive, -n` — skip the wizard; requires `--project` and `--db`
+- `--no-interactive, -n` — skip the wizard; requires `--db` (and `--project` only if backups sit under a project folder)
 - `--project, -p TEXT` — project/group folder under `BASE_DIR`
 - `--db, -d TEXT` — repeatable; database(s) to restore
 - `--file, -f TEXT` — backup file name inside the database folder (default: latest by mtime)

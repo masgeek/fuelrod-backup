@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import gzip
-import os
 import re
-import shutil
 import subprocess
 import sys
-import tempfile
+import uuid
+from datetime import datetime
 from pathlib import Path
 
 from rich.console import Console
@@ -21,8 +19,10 @@ from .adapters import get_adapter
 from .adapters.base import DbAdapter
 from .config import Config
 from .crypto import CryptoError, decrypt_if_needed, is_encrypted
+from .fileutil import gunzip_to_temp, human_size
 from .notify import EXIT_ABORTED, EXIT_FAILURE, EXIT_OK, notify, report_delivery_errors
 from .output import emit, error, json_enabled, register
+from .procenv import minimal_env
 
 console = register(Console())
 
@@ -54,10 +54,7 @@ def _die(msg: str) -> None:
 
 
 def _human_size(path: Path) -> str:
-    size = path.stat().st_size
-    if size > 1024 * 1024:
-        return f"{size / 1024 / 1024:.1f} MB"
-    return f"{size / 1024:.1f} KB"
+    return human_size(path.stat().st_size)
 
 
 def _validate_resolved_path(resolved: Path, expected_base: Path) -> None:
@@ -219,6 +216,12 @@ def _step_select_top_dir(cfg: Config) -> Path:
     _validate_resolved_path(top_dir, base)
     console.print(f"  Selected: [bold]{top_dir.name}[/]")
     return top_dir
+
+
+def _direct_engine_dir(cfg: Config) -> Path | None:
+    """BASE_DIR/<engine> when backups are written straight under BASE_DIR (no project level)."""
+    engine_dir = Path(cfg.base_dir).resolve() / cfg.db_type.value
+    return engine_dir if engine_dir.is_dir() and not engine_dir.is_symlink() else None
 
 
 def _resolve_engine_dir(top_dir: Path, db_type_value: str) -> Path:
@@ -492,59 +495,64 @@ def _step_target_db(database: str, dry_run: bool, adapter: DbAdapter) -> str:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  Execute restore (PostgreSQL-specific streaming)
+#  Execute restore (PostgreSQL-specific)
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _execute_pg_restore(
-        backup_file: Path,
-        target_db: str,
-        restore_args: list[str],
+def _guard_target(
         cfg: Config,
+        adapter: DbAdapter,
+        target_db: str,
+        *,
+        interactive: bool,
+        force: bool,
+        safety_dump: bool,
 ) -> None:
-    """Stream the dump file into pg_restore."""
-    base_args = [
-                    "-U", cfg.user,
-                    "-h", cfg.host,
-                    "-p", str(cfg.port),
-                    "-d", target_db,
-                    "-v",
-                ] + restore_args
+    """
+    Restore guardrails: summarise what is about to be overwritten, refuse to restore
+    over active connections without consent, and optionally take a safety dump first.
+    """
+    try:
+        exists = adapter.db_exists(target_db)
+    except Exception:  # noqa: BLE001 — a failed probe must not block the restore itself
+        return
+    if not exists:
+        return
 
-    if cfg.use_docker:
-        cmd = (
-                ["docker", "exec", "-i",
-                 "-e", f"PGPASSWORD={cfg.password}",
-                 "-e", f"PGUSER={cfg.user}",
-                 cfg.service,
-                 cfg.pg_restore_cmd]
-                + base_args
-        )
-        # Minimal env — password already injected via -e; don't leak host secrets.
-        env = {"PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")}
-    else:
-        cmd = [cfg.pg_restore_cmd] + base_args
-        env = os.environ.copy()
-        env["PGPASSWORD"] = cfg.password
+    try:
+        tables = adapter.get_table_count(target_db)
+        size = adapter.get_db_size(target_db)
+    except Exception:  # noqa: BLE001
+        tables, size = "?", "?"
+    active = adapter.active_connections(target_db)
 
-    if backup_file.suffix == ".gz":
-        with tempfile.NamedTemporaryFile(suffix=".dump", delete=False) as tmp_file:
-            tmp = Path(tmp_file.name)
+    _section("Restore Guardrails")
+    console.print(f"  Target '{target_db}' already exists: {tables} table(s), {size}.")
+    console.print("  [yellow]Restoring will overwrite its current contents.[/]")
+
+    if active:
+        console.print(f"  [red]{active} active connection(s)[/] to '{target_db}'.")
+        if interactive:
+            if not questionary.confirm("Restore anyway?", default=False).ask():
+                console.print("[yellow]Aborted by user.[/]")
+                sys.exit(EXIT_ABORTED)
+        elif not force:
+            _die(f"Refusing to restore over {active} active connection(s) to '{target_db}'. Use --force to proceed.")
+
+    if interactive and not safety_dump:
+        safety_dump = bool(questionary.confirm(
+            "Take a safety dump of the current database first?", default=True
+        ).ask())
+    if safety_dump:
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_dir = Path(cfg.backup_dir) / target_db
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out = out_dir / f"{target_db}_pre_restore_{stamp}{adapter.dump_extension}"
+        console.print(f"  Safety dump → {out}")
         try:
-            with gzip.open(backup_file, "rb") as gz_in, tmp.open("wb") as f_out:
-                shutil.copyfileobj(gz_in, f_out)
-            with tmp.open("rb") as f_in:
-                subprocess.run(cmd, stdin=f_in, env=env, check=True)
-        finally:
-            if tmp.exists():
-                tmp.unlink()
-    else:
-        with backup_file.open("rb") as f_in:
-            subprocess.run(cmd, stdin=f_in, env=env, check=True)
+            adapter.backup_db(target_db, out, include_schemas=[], exclude_schemas=[])
+        except Exception as exc:
+            _die(f"Safety dump failed ({exc}); restore aborted.")
 
-
-# ──────────────────────────────────────────────────────────────────────────────
-#  Public entry point
-# ──────────────────────────────────────────────────────────────────────────────
 
 def _execute_pg_restore_v2(
         backup_file: Path,
@@ -563,37 +571,36 @@ def _execute_pg_restore_v2(
     work_file = backup_file
     tmp_plain: Path | None = None
     ctr_path: str | None = None
+    # Minimal env; PGPASSWORD/PGUSER are forwarded into the container via bare `-e NAME`
+    # so the secret never appears in the host process list.
+    env = minimal_env({"PGPASSWORD": cfg.password, "PGUSER": cfg.user})
 
     try:
         if backup_file.suffix == ".gz":
-            with tempfile.NamedTemporaryFile(suffix=".dump", delete=False) as tmp_file:
-                tmp_plain = Path(tmp_file.name)
-            with gzip.open(backup_file, "rb") as gz_in, tmp_plain.open("wb") as f_out:
-                shutil.copyfileobj(gz_in, f_out)
+            tmp_plain = gunzip_to_temp(backup_file)
             work_file = tmp_plain
 
         if cfg.use_docker:
-            safe_stem = re.sub(r"[^A-Za-z0-9_.-]", "_", work_file.stem) or "dump"
-            ctr_path = f"/tmp/pg_restore_{safe_stem}.dump"  # noqa: S108
+            ctr_path = f"/tmp/pg_restore_{uuid.uuid4().hex}.dump"  # noqa: S108 — inside the container, unique per call
             subprocess.run(
                 ["docker", "cp", str(work_file), f"{cfg.service}:{ctr_path}"],
                 check=True,
+                env=minimal_env(),
             )
             subprocess.run(
                 [
                     "docker", "exec", "-i",
-                    "-e", f"PGPASSWORD={cfg.password}",
-                    "-e", f"PGUSER={cfg.user}",
+                    "-e", "PGPASSWORD",
+                    "-e", "PGUSER",
                     cfg.service,
                     cfg.pg_restore_cmd,
                     *base_args,
                     ctr_path,
                 ],
+                env=env,
                 check=True,
             )
         else:
-            env = os.environ.copy()
-            env["PGPASSWORD"] = cfg.password
             subprocess.run(
                 [cfg.pg_restore_cmd, *base_args, str(work_file)],
                 env=env,
@@ -604,6 +611,7 @@ def _execute_pg_restore_v2(
             subprocess.run(
                 ["docker", "exec", cfg.service, "rm", "-f", ctr_path],
                 check=False,
+                env=minimal_env(),
             )
         if tmp_plain and tmp_plain.exists():
             tmp_plain.unlink()
@@ -683,6 +691,9 @@ def _perform_restore(
         role_args: list[str],
         jobs: int,
         extra_files: list[Path] | None = None,
+        interactive: bool = True,
+        force: bool = False,
+        safety_dump: bool = False,
 ) -> None:
     """
     Run the engine-specific restore and print the post-restore report.
@@ -690,6 +701,8 @@ def _perform_restore(
     *extra_files* are applied after the main dump, oldest first — used to layer
     an incremental chain on top of its base.
     """
+    _guard_target(cfg, adapter, target_db, interactive=interactive, force=force, safety_dump=safety_dump)
+
     console.print()
     console.print(f"  Restoring [bold]{backup_file.name}[/] → [bold]{target_db}[/]")
 
@@ -783,7 +796,20 @@ def _perform_restore(
     console.print(Panel(f"[bold green]RESTORE COMPLETE → {target_db}[/]", expand=False))
 
 
-def run_restore(
+def run_restore(cfg: Config, **kwargs) -> None:
+    """Restore a database, serialised per engine with backups by a run lock."""
+    from .lock import LockError, run_lock
+
+    if not cfg.base_dir:
+        _die(f"Backup directory not found: {cfg.base_dir}")
+    try:
+        with run_lock(cfg.base_dir, cfg.db_type.value, "restore"):
+            _run_restore(cfg, **kwargs)
+    except LockError as exc:
+        _die(str(exc))
+
+
+def _run_restore(
     cfg: Config,
     *,
     interactive: bool = True,
@@ -798,6 +824,8 @@ def run_restore(
     dry_run: bool = False,
     yes: bool = False,
     incremental_chain: bool = False,
+    force: bool = False,
+    safety_dump: bool = False,
 ) -> None:
     """Restore a database from a dump file.
 
@@ -818,6 +846,8 @@ def run_restore(
             dry_run=dry_run,
             yes=yes,
             incremental_chain=incremental_chain,
+            force=force,
+            safety_dump=safety_dump,
         )
         return
 
@@ -833,11 +863,12 @@ def run_restore(
     # Step 1 — Connection
     _step_connection(cfg, adapter)
 
-    # Step 2 — Select top-level project/group directory
-    top_dir = _step_select_top_dir(cfg)
-
-    # Step 2b — Auto-resolve engine sub-directory from db_type config
-    engine_dir = _resolve_engine_dir(top_dir, cfg.db_type.value)
+    # Step 2 — BASE_DIR/<engine> is what `backup` writes; use it directly when present,
+    # otherwise let the user pick a project/group folder that contains <engine>.
+    engine_dir = _direct_engine_dir(cfg)
+    if engine_dir is None:
+        top_dir = _step_select_top_dir(cfg)
+        engine_dir = _resolve_engine_dir(top_dir, cfg.db_type.value)
     console.print(f"  Engine dir : [dim]{engine_dir}[/]")
 
     # Step 3 — Select database folder
@@ -969,6 +1000,8 @@ def run_restore(
         role_args=role_args,
         jobs=jobs,
         extra_files=_resolve_chain(backup_file, incremental_chain, adapter),
+        interactive=True,
+        safety_dump=safety_dump,
     )
 
 
@@ -997,6 +1030,8 @@ def run_restore_noninteractive(
     dry_run: bool,
     yes: bool,
     incremental_chain: bool = False,
+    force: bool = False,
+    safety_dump: bool = False,
 ) -> None:
     """Restore without any prompt; every decision comes from the caller."""
     adapter = get_adapter(cfg)
@@ -1007,8 +1042,6 @@ def run_restore_noninteractive(
         _die(f"Backup directory not found: {cfg.base_dir}")
     if scope not in _SCOPE_ARGS:
         _die(f"Invalid scope {scope!r}. Use one of: {', '.join(_SCOPE_ARGS)}.")
-    if not project:
-        _die("--project is required with --no-interactive (the top-level folder under BASE_DIR).")
     if not database:
         _die("--db is required with --no-interactive (the database folder name).")
 
@@ -1018,12 +1051,16 @@ def run_restore_noninteractive(
     ))
 
     base = Path(cfg.base_dir).resolve()
-    top_dir = (base / project).resolve()
-    _validate_resolved_path(top_dir, base)
-    if not top_dir.is_dir():
-        _die(f"Project directory not found: {top_dir}")
-
-    engine_dir = _resolve_engine_dir(top_dir, cfg.db_type.value)
+    if project:
+        top_dir = (base / project).resolve()
+        _validate_resolved_path(top_dir, base)
+        if not top_dir.is_dir():
+            _die(f"Project directory not found: {top_dir}")
+        engine_dir = _resolve_engine_dir(top_dir, cfg.db_type.value)
+    else:
+        engine_dir = _direct_engine_dir(cfg)
+        if engine_dir is None:
+            _die(f"--project is required: no '{cfg.db_type.value}' folder directly under {base}.")
     db_dir = (engine_dir / database).resolve()
     _validate_resolved_path(db_dir, engine_dir)
     if not db_dir.is_dir():
@@ -1125,6 +1162,9 @@ def run_restore_noninteractive(
         role_args=role_args,
         jobs=jobs,
         extra_files=chain,
+        interactive=False,
+        force=force,
+        safety_dump=safety_dump,
     )
 
 

@@ -80,3 +80,12 @@ MSSQL_BACKUP_DIR=/var/opt/mssql/backups
 #MS_SERVICE=mssql
 #MS_USE_DOCKER=true
 #MS_BACKUP_DIR=/var/opt/mssql/backups
+
+# ── Operations ──────────────────────────────────────────────
+# GFS retention profile (overrides KEEP_DAYS): newest backup of each of the last N periods
+# RETENTION=daily=7,weekly=4,monthly=12
+# Lifecycle hooks: PRE_BACKUP_HOOK aborts the backup on non-zero exit; POST_BACKUP_HOOK only warns
+# PRE_BACKUP_HOOK=
+# POST_BACKUP_HOOK=
+# Warn when a dump is smaller than this fraction of the previous one (0 = off)
+# SIZE_WARN_RATIO=0.5

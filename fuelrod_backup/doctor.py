@@ -14,6 +14,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from .config import Config
+from .fileutil import human_size
 from .notify import EXIT_FAILURE, EXIT_OK, notify
 from .output import emit, json_enabled, register
 
@@ -134,18 +135,18 @@ def check_base_dir(cfg: Config, report: Report) -> None:
     report.add("BASE_DIR", "ok", str(base))
 
     try:
-        free_mb = shutil.disk_usage(base).free / 1024 / 1024
+        free = shutil.disk_usage(base).free
     except OSError as exc:
         report.add("Disk space", "warn", f"unknown: {exc}")
         return
 
-    if free_mb < _MIN_FREE_MB:
+    if free < _MIN_FREE_MB * 1024 * 1024:
         report.add(
-            "Disk space", "warn", f"only {free_mb:.0f} MB free",
-            f"Backups need room; less than {_MIN_FREE_MB} MB left.",
+            "Disk space", "warn", f"only {human_size(free)} free",
+            f"Backups need room; less than {human_size(_MIN_FREE_MB * 1024 * 1024)} left.",
         )
     else:
-        report.add("Disk space", "ok", f"{free_mb:.0f} MB free")
+        report.add("Disk space", "ok", f"{human_size(free)} free")
 
 
 def check_retention(cfg: Config, report: Report) -> None:
@@ -295,7 +296,7 @@ def check_rclone(cfg: Config, report: Report) -> None:
             "Only needed for sync — install from https://rclone.org/install/",
         )
         return
-    
+
     try:
         remotes = subprocess.run(
             ["rclone", "listremotes"], capture_output=True, timeout=15, check=False
@@ -341,8 +342,11 @@ def check_n8n_services(cfg: Config, report: Report) -> None:
 #  Orchestration
 # ──────────────────────────────────────────────────────────────────────────────
 
-def run_doctor(cfg: Config, *, skip_connection: bool = False) -> int:
-    """Run every diagnostic. Returns a process exit code."""
+def run_doctor(cfg: Config, *, skip_connection: bool = False, collect: list | None = None) -> int:
+    """Run every diagnostic. Returns a process exit code.
+
+    With *collect*, the JSON payload is appended there instead of being emitted (multi-engine runs).
+    """
     report = Report()
 
     check_python(report)
@@ -359,8 +363,9 @@ def run_doctor(cfg: Config, *, skip_connection: bool = False) -> int:
     check_n8n_services(cfg, report)
 
     if json_enabled():
-        emit({
+        payload = {
             "command": "doctor",
+            "engine": cfg.db_type.value,
             "status": "fail" if report.failures else "ok",
             "summary": {
                 "total": len(report.checks),
@@ -373,10 +378,14 @@ def run_doctor(cfg: Config, *, skip_connection: bool = False) -> int:
                 {"name": d.name, "status": d.status, "detail": d.detail, "hint": d.hint}
                 for d in report.checks
             ],
-        })
+        }
+        if collect is not None:
+            collect.append(payload)
+        else:
+            emit(payload)
         return 1 if report.failures else 0
 
-    console.print(Panel("[bold cyan]DOCTOR[/] — pre-flight checks", expand=False))
+    console.print(Panel(f"[bold cyan]DOCTOR[/] — pre-flight checks ({cfg.db_type.value})", expand=False))
 
     table = Table(show_header=True, header_style="bold")
     table.add_column("", width=3)

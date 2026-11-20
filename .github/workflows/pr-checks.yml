@@ -18,7 +18,7 @@ jobs:
         with:
           fetch-depth: 1
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.15"
 
@@ -46,7 +46,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: [ "3.13" ]
+        python-version: [ "3.13", "3.14", "3.15" ]
     concurrency:
       group: test-py${{ matrix.python-version }}-${{ github.head_ref || github.ref_name }}
       cancel-in-progress: true
@@ -56,7 +56,7 @@ jobs:
         with:
           fetch-depth: 1
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -86,4 +86,87 @@ jobs:
         with:
           name: test-results-py${{ matrix.python-version }}
           path: test-results.xml
+          retention-days: 1
+
+  integration:
+    name: Integration (real databases)
+    needs: [ lint ]
+    runs-on: ubuntu-latest
+    concurrency:
+      group: integration-${{ github.head_ref || github.ref_name }}
+      cancel-in-progress: true
+
+    services:
+      postgres:
+        image: postgres:18  # keep in step with the postgresql-client major installed below
+        env:
+          POSTGRES_PASSWORD: it-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      mariadb:
+        image: mariadb:11
+        env:
+          MARIADB_ROOT_PASSWORD: it-password
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "healthcheck.sh --connect --innodb_initialized"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      IT_PG_HOST: 127.0.0.1
+      IT_PG_PORT: "5432"
+      IT_PG_USER: postgres
+      IT_PG_PASSWORD: it-password
+      IT_MY_HOST: 127.0.0.1
+      IT_MY_PORT: "3306"
+      IT_MY_USER: root
+      IT_MY_PASSWORD: it-password
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Install database client tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-client mariadb-client
+          pg_dump --version
+          mariadb-dump --version
+
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          virtualenvs-in-project: true
+
+      - name: Cache virtualenv
+        uses: actions/cache@v6
+        with:
+          path: .venv
+          key: venv-it-${{ runner.os }}-${{ hashFiles('poetry.lock') }}
+
+      - name: Install dependencies
+        run: poetry install
+
+      - name: Run integration tests
+        run: poetry run pytest tests/integration -v --tb=short --junitxml=integration-results.xml
+
+      - name: Upload integration results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: integration-results
+          path: integration-results.xml
           retention-days: 1
