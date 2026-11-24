@@ -109,7 +109,7 @@ jobs:
           --health-timeout 5s
           --health-retries 20
       mariadb:
-        image: mariadb:11
+        image: mariadb:13
         env:
           MARIADB_ROOT_PASSWORD: it-password
         ports:
