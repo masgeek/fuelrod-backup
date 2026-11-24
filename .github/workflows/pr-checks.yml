@@ -98,7 +98,7 @@ jobs:
 
     services:
       postgres:
-        image: postgres:18  # keep in step with the postgresql-client major installed below
+        image: postgres:19  # keep in step with the postgresql-client major installed below
         env:
           POSTGRES_PASSWORD: it-password
         ports:
