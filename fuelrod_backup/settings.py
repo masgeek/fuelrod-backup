@@ -205,3 +205,25 @@ def normalise(setting: Setting, raw: str) -> str:
     if value and setting.validate is not None:
         setting.validate(value)
     return value
+
+
+def render_markdown() -> str:
+    """The settings reference table used in docs/CONFIGURATION.md (kept in sync by a test)."""
+    owners = {"core": "`init`", "remote": None}
+    lines = [
+        "| Key | Default | Description | Set with |",
+        "|-----|---------|-------------|----------|",
+    ]
+    for s in SETTINGS:
+        if s.advanced:
+            owner = f"`init --section {s.group}`"
+        else:
+            owner = owners.get(s.group) or f"`{s.wizard}`"
+        default = f"`{s.default}`" if s.default else "—"
+        note = f" (only when `{s.depends_on[0]}` is set)" if s.depends_on else ""
+        lines.append(f"| `{s.key}` | {default} | {s.help}{note} | {owner} |")
+    return "\n".join(lines)
+
+
+if __name__ == "__main__":
+    print(render_markdown())

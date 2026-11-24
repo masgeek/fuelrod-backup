@@ -8,11 +8,15 @@ Interactive backup and restore CLI for PostgreSQL, MariaDB/MySQL, and Microsoft 
 - Interactive backup and restore wizards with progress bars
 - Non-interactive backup and restore modes for automation
 - Docker and direct-host connection modes
-- Config bootstrap wizard (`init`) and connection check (`test`)
-- Backup retention cleanup (`KEEP_DAYS`)
+- Config bootstrap wizard (`init`, every setting reachable; `init --list`) and connection check (`test`)
+- Backup retention cleanup (`KEEP_DAYS`, or GFS profiles with `RETENTION=daily=7,weekly=4,monthly=12`)
+- Run locks so a backup and a restore of the same engine never overlap; pre/post backup hooks; a warning when a dump
+  is suddenly much smaller than the last one
 - Interactive database/schema drop, plus disconnect-without-drop (`drop`)
 - Backup integrity verification (`verify`)
-- Pre-flight diagnostics (`doctor`)
+- Pre-flight diagnostics (`doctor`), restore drills (`verify --restore-test`) and backup listing (`list`)
+- Remote quota monitoring and pruning (`quota`), a global `manifest.json` index, and scheduling of
+  backup / pull / push / quota jobs (`schedule`)
 - n8n Docker volume snapshots with no container downtime
 - Off-site sync to Google Drive, S3, B2, SFTP or any rclone remote (`sync`), and parallel download back to local storage (`pull`)
 - MariaDB → PostgreSQL migration with schema transformation, data migration, and post-migration validation (`migrate`)
@@ -68,23 +72,25 @@ fuelrod-backup restore
 
 ```text
 fuelrod-backup init       [OPTIONS]
+fuelrod-backup list       [OPTIONS]
 fuelrod-backup test       [OPTIONS]
 fuelrod-backup backup     [OPTIONS]
 fuelrod-backup restore    [OPTIONS]
 fuelrod-backup drop       [OPTIONS]
+fuelrod-backup create     [OPTIONS]
 fuelrod-backup verify    [OPTIONS]
-fuelrod-backup doctor    [OPTIONS]
+fuelrod-backup doctor     [OPTIONS]
 fuelrod-backup migrate    [OPTIONS]
 fuelrod-backup n8n-backup  [OPTIONS]
 fuelrod-backup n8n-restore [OPTIONS]
 fuelrod-backup sync        [OPTIONS]
+fuelrod-backup sync-init   [OPTIONS]
 fuelrod-backup pull        [OPTIONS]
 fuelrod-backup pull-init   [OPTIONS]
 fuelrod-backup push        [OPTIONS]   (alias of sync)
 fuelrod-backup push-init   [OPTIONS]
 fuelrod-backup quota       [OPTIONS]
 fuelrod-backup schedule    [OPTIONS]
-fuelrod-backup sync [OPTIONS]  Upload backups to an off-site remote via rclone (S3, B2, etc.)
 ```
 
 The short alias `fr-bkp` is equivalent to `fuelrod-backup` for all commands.
@@ -113,7 +119,9 @@ written; clearing an answer removes the key; everything else in the file is left
 
 ### `test`
 
-Validate connection and print the resolved config.
+Validate the connection and print the resolved config, **for every configured engine** (`PG_*` / `MY_*` / `MS_*`
+keys, or just `DB_TYPE`). Use `--db-type` to test one. Exits 1 if any connection fails; with `--json` and several
+engines the output is `{"engines": [...]}`.
 
 - `--docker / --no-docker`
 - `--db-type, -t` — `postgres | mariadb | mssql`
@@ -129,22 +137,45 @@ Interactive or non-interactive backup with optional retention cleanup.
 - `--keep-days, -k INT` — override `KEEP_DAYS` (`0` keeps forever)
 - `--db, -d TEXT` — repeatable; restrict to specific database(s)
 - `--docker / --no-docker`
-- `--db-type, -t`
+- `--db-type, -t` — engine; asked interactively when several are available and none is given
+- `--config, -c PATH`
+
+A backup takes a per-engine lock (`BASE_DIR/.fuelrod-<engine>.lock`), so it never overlaps a restore or another
+backup of the same engine; a stale lock is reclaimed. Around the dumps:
+
+- `PRE_BACKUP_HOOK` / `POST_BACKUP_HOOK` — a command run before (non-zero exit aborts the backup) and after (failure
+  only warns) the run; the engine and folder are passed as `FUELROD_*` environment variables
+- `RETENTION=daily=7,weekly=4,monthly=12` — keep the newest backup of each of the last N days/weeks/months/years per
+  database (overrides `KEEP_DAYS`)
+- `SIZE_WARN_RATIO=0.5` — warn when a dump is smaller than this fraction of the previous one (possible silent failure)
+- `BASE_DIR/manifest.json` is rewritten after the run (see **Manifest**)
+
+### `list`
+
+List the backups under `BASE_DIR` per engine and database with size, age and flags (encrypted, gzip, incremental).
+
+- `--engine, -e TEXT` / `--db, -d TEXT` — restrict to one engine / database folder
+- `--json` — machine-readable output
 - `--config, -c PATH`
 
 ### `restore`
 
 Interactive restore wizard with engine-specific options. PostgreSQL includes TOC analysis for schema, table, and role filtering.
 
-The wizard navigates the backup directory in four steps:
+The wizard navigates the backup directory in these steps:
 
-1. **Project directory** — pick a top-level folder under `BASE_DIR` (e.g. `akilimo`, `fuelrod`)
-2. **Engine directory** — auto-resolved from `DB_TYPE` (e.g. `postgres`, `mariadb`) — no prompt
+1. **Engine** — asked when several are available (`--db-type` skips it)
+2. **Project directory** — only when backups sit under a project folder; if `BASE_DIR/<engine>` exists (what
+   `backup` writes) it is used directly
 3. **Database** — pick the database folder within the engine directory
 4. **Backup file** — pick from files in that database folder only
 
+Before overwriting an existing database the restore shows what will be replaced (tables, size) and refuses to run
+over active connections unless you confirm (interactive) or pass `--force`. A per-engine lock keeps it from
+overlapping a backup.
+
 - `--no-interactive, -n` — skip the wizard; requires `--db` (and `--project` only if backups sit under a project folder)
-- `--project, -p TEXT` — project/group folder under `BASE_DIR`
+- `--project, -p TEXT` — project/group folder under `BASE_DIR` (only for a project-folder layout)
 - `--db, -d TEXT` — repeatable; database(s) to restore
 - `--file, -f TEXT` — backup file name inside the database folder (default: latest by mtime)
 - `--target-db TEXT` — restore into a different database name
@@ -154,6 +185,8 @@ The wizard navigates the backup directory in four steps:
 - `--no-owner` — restore with `--no-owner --no-privileges`
 - `--dry-run` — print the plan and exit without changing anything
 - `--incremental-chain` — after restoring the chosen base, apply every newer `_inc` dump in order
+- `--force` — restore even if the target database has active connections
+- `--safety-dump` — dump the existing target database before overwriting it
 - `--yes, -y` — required to actually execute a non-interactive restore
 - `--all-engines, -a` — restore all engines sequentially (multi-engine config)
 - `--docker / --no-docker`
@@ -172,9 +205,11 @@ fuelrod-backup restore -n -p fuelrod -d app --target-db app_restored --yes
 
 ### `doctor`
 
-Run pre-flight checks and report everything that is not ready yet.
+Run pre-flight checks and report everything that is not ready yet, for every configured engine (`--db-type`
+limits it to one).
 
 - `--skip-connection` — skip the live database connection test
+- `--db-type, -t` — check only this engine
 - `--config, -c PATH`
 
 Checks the Python runtime, config file discovery, credentials, `BASE_DIR` existence/writability and
@@ -194,6 +229,9 @@ so it can gate a cron job or a restore drill.
 - `--checksum, -k` — also compute a SHA-256 for each artifact
 - `--deep` — fully decompress and CRC-check every archive (slow on large trees)
 - `--parallel, -j INT` — concurrent workers (default: `min(8, CPU count)`)
+- `--restore-test` — **restore drill**: restore the newest full backup of each database into a throwaway database,
+  check it has tables, then drop it (exit 3 if a drill fails)
+- `--db-type, -t` — engine for `--restore-test`
 - `--json` — emit a machine-readable JSON document
 - `--config, -c PATH`
 
@@ -252,6 +290,23 @@ Use `--disconnect-only` to terminate connections **without** dropping anything.
 - `--docker / --no-docker`
 - `--db-type, -t`
 - `--config, -c PATH`
+
+### `create`
+
+Interactively create a database, or a new schema inside an existing PostgreSQL database. The name is confirmed
+before anything is created.
+
+- `--docker / --no-docker`
+- `--db-type, -t` — engine; asked when several are available
+- `--config, -c PATH`
+
+### `sync-init`
+
+Configure the off-site `sync`/`push` remote without running the full `init` wizard: a guided S3 setup (writes the
+rclone remote and the `S3_*` keys) or a generic rclone remote spec (`REMOTE`). `pull-init` and `push-init` choose
+the rclone remotes / folders used by `pull` and `push`. All three merge into the existing config file.
+
+- `--output, -o PATH` — config file to update
 
 ### `migrate`
 
@@ -543,26 +598,23 @@ DB_PORT=
 
 ### Optional keys
 
+Every key — with its default, description and the command that sets it — is in the generated table in
+[docs/CONFIGURATION.md](docs/CONFIGURATION.md#settings-reference); `fuelrod-backup init --list` prints it with your
+current values. The most used ones:
+
 | Key | Description |
 |-----|-------------|
-| `USE_DOCKER` | `true`/`false` — connect via Docker exec |
-| `SERVICE` | container name (Docker mode) |
+| `USE_DOCKER` / `SERVICE` | connect via Docker exec / container name |
 | `BASE_DIR` | backup root directory |
 | `COMPRESS_FILE` | `true`/`false` — gzip output |
-| `INCREMENTAL` | `true`/`false` — dump only changed tables (PostgreSQL only) |
-| `INCREMENTAL_KEEP` | number of `_inc` dumps to keep alongside the base (default 5) |
-| `ENCRYPT` | `true`/`false` — encrypt artifacts after compression |
-| `ENCRYPT_TOOL` | `age` (default) or `gpg` |
-| `ENCRYPT_RECIPIENT` | age public key (`age1…`) or gpg recipient key |
-| `ENCRYPT_IDENTITY_FILE` | age private key file, needed to restore encrypted backups |
-| `ENCRYPT_PASSPHRASE_FILE` | passphrase file for symmetric gpg (never pass a passphrase on the CLI) |
-| `NOTIFY_ON` | `success` / `failure` / `all` — which events notify |
-| `NOTIFY_URL` | webhook endpoint receiving a JSON POST |
-| `NOTIFY_HOOK_SUCCESS` | command run on success, e.g. `/bin/notify {status} {command}` |
-| `NOTIFY_HOOK_FAILURE` | command run on failure |
-| `NOTIFY_TIMEOUT` | webhook/hook timeout in seconds (default 15) |
-| `S3_PROVIDER` | rclone `--s3-provider` (Minio, Wasabi, ...) for `s3:` remotes |
-| `KEEP_DAYS` | retention days (`0` = keep forever) |
+| `KEEP_DAYS` / `RETENTION` | retention days, or a GFS profile (`daily=7,weekly=4,monthly=12`) |
+| `INCREMENTAL`, `INCREMENTAL_KEEP` | dump only changed tables (PostgreSQL only) and how many `_inc` dumps to keep |
+| `ENCRYPT`, `ENCRYPT_TOOL`, `ENCRYPT_RECIPIENT`, `ENCRYPT_IDENTITY_FILE`, `ENCRYPT_PASSPHRASE_FILE` | encryption at rest (age / gpg) |
+| `NOTIFY_ON`, `NOTIFY_URL`, `NOTIFY_HOOK_SUCCESS`, `NOTIFY_HOOK_FAILURE`, `NOTIFY_TIMEOUT` | notifications |
+| `PRE_BACKUP_HOOK`, `POST_BACKUP_HOOK`, `SIZE_WARN_RATIO`, `MANIFEST` | backup hooks, size-drop warning, manifest |
+| `PUSH_REMOTE`, `PUSH_LATEST`, `PUSH_DELETE_LOCAL`, `PUSH_QUOTA*` | push destinations, how many backups to upload, local cleanup, quota |
+| `PULL_REMOTE`, `PULL_EXCLUDE`, `PULL_DELETE_REMOTE`, `PULL_KEEP_REMOTE` | pull source, ignored files, deleting on the server |
+| `RCLONE_CMD` | rclone executable when it is not on `PATH` |
 | `CONNECTION_TIMEOUT` | connection timeout in seconds |
 
 ### Engine-specific keys
@@ -608,7 +660,8 @@ Backups are written under a project folder, then engine type, then database name
 
 The `<project>` folder is determined by how `BASE_DIR` is set per project. Set `BASE_DIR` to the root that contains all project folders and the restore wizard will let you navigate from there.
 
-The restore wizard searches from `BASE_DIR`, not `BASE_DIR/<engine>`, so the directory does not need to exist at that path.
+`backup` writes `BASE_DIR/<engine>/<database>/…` (the project level is optional), and `BASE_DIR/manifest.json` indexes everything.
+`restore` uses `BASE_DIR/<engine>` directly when it exists and otherwise lets you pick a project folder.
 
 ## Notes
 
@@ -620,6 +673,21 @@ The restore wizard searches from `BASE_DIR`, not `BASE_DIR/<engine>`, so the dir
 ## License
 
 GNU General Public License v3.0 or later. See [LICENSE](LICENSE).
+
+## Upgrade notes
+
+Behaviour that changed for existing setups:
+
+- **`push` / `sync` uploads only the newest 3 backups per database** (`PUSH_LATEST=3`). For the old
+  upload-everything behaviour use `--latest 0` or `PUSH_LATEST=0`.
+- **`push` / `sync` no longer prunes remote files older than 2 days.** That default deleted freshly uploaded backups
+  that were older than that. Age pruning now needs `--days N`; bound the remote with a quota (`PUSH_QUOTA`) instead.
+- **`BASE_DIR` now contains `manifest.json`** (set `MANIFEST=false` to stop writing it); scripts that scan the folder
+  will see it. It is never uploaded as a backup file.
+- **`init` keeps the keys it does not ask about** instead of rewriting the file, and saves `.backup.bak` first.
+- **`test` and `doctor` run for every configured engine**, and with `--json` and several engines they emit
+  `{"engines": [...]}`. `quota` exits 1 while a destination is over quota.
+- `--remote` of `sync` / `push` is repeatable and accepts local folders (`D:/OneDrive/Backups`).
 
 ## Breaking Change
 

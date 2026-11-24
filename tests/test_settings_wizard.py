@@ -245,3 +245,22 @@ class TestInitCommand:
         with pytest.raises((SystemExit, typer.Exit)):
             cli_mod.init_config(output=tmp_path / ".backup", section=["nope"], advanced=False,
                                 list_settings=False, as_json=False)
+
+
+class TestDocsStayInSync:
+    def test_settings_reference_in_configuration_md_is_current(self):
+        doc = (ROOT / "docs" / "CONFIGURATION.md").read_text(encoding="utf-8")
+        block = doc.split("<!-- settings:start -->")[1].split("<!-- settings:end -->")[0].strip()
+        assert block == st.render_markdown(), "regenerate with: python -m fuelrod_backup.settings"
+
+    def test_every_command_is_in_the_readme_command_list(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        names = {c.name or c.callback.__name__.replace("_", "-") for c in cli_mod.app.registered_commands}
+        missing = sorted(n for n in names if f"fuelrod-backup {n}" not in readme)
+        assert not missing, f"add {missing} to the CLI Commands list in README.md"
+
+    def test_every_module_is_in_the_architecture_doc(self):
+        doc = (ROOT / "docs" / "ARCHITECTURE.md").read_text(encoding="utf-8")
+        modules = sorted(p.stem for p in (ROOT / "fuelrod_backup").glob("*.py") if p.stem != "__init__")
+        missing = [m for m in modules if f"`{m}.py`" not in doc]
+        assert not missing, f"add {missing} to the module table in docs/ARCHITECTURE.md"

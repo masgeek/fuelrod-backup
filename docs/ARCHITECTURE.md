@@ -16,10 +16,25 @@
 | `notify.py` | Webhook/command notifications and the shared exit-code contract |
 | `runner.py` | PostgreSQL native + subprocess operations (psycopg3) |
 | `drop.py` | Interactive database/schema drop |
+| `create.py` | Interactive database/schema creation |
+| `rclone_config.py` | Reads/writes `rclone.conf` remotes for the guided S3 setup in `sync-init` |
 | `n8n_backup.py` | Hot Docker volume snapshots for n8n |
 | `n8n_restore.py` | Volume archive restore for n8n |
-| `storage.py` | Off-site upload to any rclone remote (Drive, S3, B2, SFTP, …) |
-| `storage.py` | Generalizes off-site sync to any rclone backend; supports S3 credentials in config |
+| `storage.py` | Push (`sync`): upload to one or several rclone remotes / local folders, `--latest`, prune, the rclone runner (`run_rclone_process`, verbose logging) |
+| `pull.py` | Parallel download from an rclone remote, history, exclude, delete-after-pull |
+| `pullhistory.py` | What was already pulled (path + size) and the last manifest fingerprint, kept in the user config folder |
+| `manifest.py` | `BASE_DIR/manifest.json`, a global index of every backup, read by `pull` instead of listing folders |
+| `quota.py` | Remote size monitoring and pruning of the oldest backups |
+| `schedule.py` | cron / Task Scheduler entries for backup, pull, push, quota, verify, doctor |
+| `settings.py` | Registry of every config key, used by `init` (and tests) |
+| `engine_select.py` | Engine prompt shared by the interactive commands |
+| `lock.py` | Per-engine run lock shared by backup and restore |
+| `retention.py` | GFS retention profiles (`RETENTION=daily=7,weekly=4,…`) |
+| `hooks.py` | `PRE_BACKUP_HOOK` / `POST_BACKUP_HOOK` |
+| `catalog.py` | Backup listing (`list`) and the size-drop check |
+| `restoretest.py` | `verify --restore-test`: restore the newest backups into a throwaway database |
+| `fileutil.py` | gunzip helper, human-readable sizes, empty-folder removal |
+| `procenv.py` | Minimal subprocess environments |
 | `migrate/` | MariaDB → PostgreSQL migration subsystem (`report.to_dict()` feeds both `--report` and `--json`) |
 | `prompt.py` | questionary wrapper with safe Ctrl+C handling |
 
@@ -192,23 +207,71 @@ unverifiable artifact never blocks a pipeline.
 
 **Restore** — extracts the archive into the volume with `docker cp` + `tar`; `--dry-run` prints the plan without touching files.
 
-## Storage Sync Flow
+## Push Flow (`sync` / `push`)
 
-`storage.py` parses a remote spec into `Remote(provider, path)` and adds the provider-specific flags
-(`provider_args()`) — Drive disables its trash so pruning actually reclaims space, S3 pins
-`--s3-provider` when configured. The `rclone` binary is invoked directly with list-form argv and an
-allowlisted minimal environment (`rclone_env()`): no shell, and no credential leakage. Adding a
-backend is a data change, not a code change.
+1. Resolve the destinations: `--remote` (repeatable) or `PUSH_REMOTE` (`|` separated) or `REMOTE` / `S3_*`. A
+   destination is an rclone remote or a local folder; Windows `D:/…` paths are folders, not remotes.
+2. Select the files under `BASE_DIR` (`--include`, `--schema`, `--since/--until`) and keep only the newest
+   `--latest N` (`PUSH_LATEST`, default 3) per database, with their manifests and the full base of a selected
+   incremental (`storage.select_latest`). The selection is passed to rclone with `--files-from`.
+3. Upload to each destination (`_sync_one`). Local destinations are not throttled and must be outside the backup folder.
+4. Only after **every** destination succeeded are the uploaded local files deleted (`PUSH_DELETE_LOCAL`), then
+   emptied folders are removed and the local manifest is rewritten. One failing destination does not stop the others
+   (exit code 1, local files kept).
+5. Optional pruning on each destination: `--days N` (age) and/or the quota (below). Nothing is pruned by default.
+6. After uploading and pruning, a fresh `manifest.json` is published on the destination.
 
-Failure handling keeps the original safety guarantee: `_upload()` raises `StorageError` on a failed
-transfer, which aborts before any local deletion; a prune failure for one pattern is recorded and
-reported without aborting the rest. `sync` handles the transfer using a generalized rclone backend.
-## Google Drive Sync Flow
+`rclone` is always started with list-form argv and an allowlisted environment (`rclone_env()`); `-v/-vv`
+(`run_rclone_process`) echoes each command with credentials masked and streams rclone's log; the provider
+flags (`provider_args()`) are a data change, not a code change.
 
-1. Resolve backup files matching glob include patterns.
-2. Upload to the configured rclone remote folder.
-3. Prune remote files older than `--days` (default: 2 days).
-4. Optionally delete local files after successful upload.
+## Pull Flow (`pull`)
+
+1. Resolve the remote (`--remote`, `PULL_REMOTE`, `REMOTE`), then read `manifest.json` from it with one request.
+   If its fingerprint equals the one stored after the last complete, unfiltered pull, stop (`NOTHING NEW`).
+2. Build one job per `<engine>/<database>` from the manifest — or, when there is none, by listing the folders (only
+   `postgres`/`mariadb`/`mssql` folders are pulled). Jobs run in a thread pool (`--parallel`).
+3. Per job, decide which files to download: skip `--exclude` / `PULL_EXCLUDE` matches, files already local with the
+   same size and files recorded in the pull history (so a local copy removed by `push` is not fetched again);
+   `--overwrite` / `--ignore-history` change that. The list goes to `rclone copy --files-from-raw`. If a
+   manifest-derived download fails, the folder is listed for real and retried once.
+4. `--delete-remote` (needs `--yes`) then deletes only server files that are in the local folder with the same
+   size (optionally `rclone check`), keeping the newest `--keep-remote` per database and the folders themselves;
+   the server manifest is refreshed afterwards.
+5. A complete, unfiltered, non-dry run records the manifest fingerprint in the history.
+
+## Manifest
+
+`manifest.py` maintains `BASE_DIR/manifest.json`: `{"version": 1, "fingerprint", "files": [{path, size, mtime}]}`.
+The fingerprint covers path, size and mtime (to the second). It is rewritten after a backup run (and its
+retention cleanup), after `push` removes local files, and — on destinations — after every push, `quota --prune`
+and `pull --delete-remote`. A manifest that does not parse or does not match its own fingerprint is ignored.
+Anything that changes the backup tree must refresh it. `MANIFEST=false` disables writing.
+
+## Quota Flow (`quota`, `sync --quota`)
+
+`quota.py` lists a destination once (`rclone lsjson -R`), sums the sizes and compares with `PUSH_QUOTA`. With
+`--prune` it plans deletions oldest-first in units (dump + manifest), never touching the newest
+`PUSH_QUOTA_KEEP` backups of each database, until usage is at `PUSH_QUOTA_TARGET` percent. A quota too small for
+the protected backups is reported (exit 1), never "fixed" by deleting them.
+
+## Scheduling
+
+`schedule.py` renders one entry per job (`# fuelrod-backup:<job>` in cron, task `fuelrod-backup-<job>` on
+Windows), so jobs are installed, listed and removed independently. The scheduled command always uses
+`--no-interactive --json` and absolute paths for the executable and config file.
+
+## Locking
+
+`lock.py` holds `BASE_DIR/.fuelrod-<engine>.lock` for the duration of a backup or restore of that engine, so they never
+overlap. A stale lock (dead pid on this host, or older than 24 h) is reclaimed.
+
+## Init and the Settings Registry
+
+`settings.py` has one `Setting` per config key (type, default, group, help, validation, dependencies, owning command).
+`init --list` prints it, `init --section/--advanced` walks the groups, and tests fail when `config.py` reads a key
+without an entry or a key is missing from `.backup.example`. Config writers merge (`cli._write_config` /
+`_update_config_keys`): they update only the keys a wizard manages and keep every other line, saving a `.bak` copy.
 
 ## PostgreSQL Runner
 

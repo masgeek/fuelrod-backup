@@ -29,11 +29,11 @@ Use this as the execution tracker. Items are ordered from highest to lowest reco
 - [x] 2. Structured logs and machine-readable output (`--json`)
 - [x] 3. Pre-flight checks command (`doctor`)
 - [x] 4. Backup verification command (`verify`)
-- [ ] 5. Restore guardrails and policy mode
-- [ ] 6. Locking and concurrency controls
-- [ ] 7. Retention policy profiles
-- [ ] 8. Storage backends (S3-compatible first)
-- [ ] 9. Notifications/hooks
+- [x] 5. Restore guardrails (`--force`, `--safety-dump`, active-connection check)
+- [x] 6. Locking and concurrency controls (per-engine run lock)
+- [x] 7. Retention policy profiles (`RETENTION=daily=7,weekly=4,…`)
+- [x] 8. Storage backends (any rclone remote or local folder; several at once)
+- [x] 9. Notifications/hooks (webhook, command hooks, pre/post backup hooks)
 
 ## Optional Backlog
 
@@ -41,3 +41,13 @@ Use this as the execution tracker. Items are ordered from highest to lowest reco
 - [x] Encryption at rest for backup artifacts (`ENCRYPT=true`, age/gpg)
 - [ ] Minimal web dashboard for backup catalog browsing
 - [ ] Pluggable adapter interface for additional engines
+
+## Shipped after the original plan
+
+- [x] `pull`: parallel download with history, `--exclude`, `--delete-remote`, `-v/-vv`
+- [x] `push`: several destinations (remotes or local folders), `--latest`, `PUSH_DELETE_LOCAL`
+- [x] `quota`: monitor and prune a destination to a size limit
+- [x] Global `manifest.json` read by `pull` instead of listing folders
+- [x] `schedule` for backup, pull, push, quota, verify, doctor
+- [x] `init --list / --section / --advanced`, merge-instead-of-rewrite, a registry of every setting
+- [x] `list` command, `verify --restore-test`, engine prompt, `doctor`/`test` for every configured engine
