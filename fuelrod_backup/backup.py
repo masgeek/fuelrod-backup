@@ -444,6 +444,18 @@ def _prune_by_profile(base_dir: str, profile: dict[str, int], protect: set[str])
             console.print(f"  [dim]Removed empty directory: {db_dir.name}[/]")
 
 
+def _write_manifest(cfg: Config) -> None:
+    """Rewrite BASE_DIR/manifest.json; an index that cannot be written must never fail a backup."""
+    if not cfg.manifest or not cfg.base_dir:
+        return
+    from .manifest import write_local
+
+    try:
+        write_local(Path(cfg.base_dir))
+    except OSError as exc:
+        warn(f"could not update manifest.json: {exc}")
+
+
 def _cleanup_cfg(cfg: Config) -> None:
     """Retention for one engine: RETENTION profile when set, else KEEP_DAYS."""
     base = str(cfg.backup_dir)
@@ -639,6 +651,7 @@ def _run_backup(
 
 
     _cleanup_cfg(cfg)
+    _write_manifest(cfg)
 
     try:
         run_hook(cfg.hook_post_backup, "post_backup", hook_ctx)
@@ -737,6 +750,7 @@ def run_parallel_backup(
                 progress.advance(task_id)
 
             _cleanup_cfg(cfg)
+            _write_manifest(cfg)
             return engine, True, ""
 
         except LockError as exc:

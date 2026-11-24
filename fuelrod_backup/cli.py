@@ -13,7 +13,7 @@ from rich.panel import Panel
 
 from .config import DbType, load_all_configs, load_config
 from .engine_select import load_config_choosing_engine as _choose_cfg
-from .notify import EXIT_FAILURE, EXIT_USAGE
+from .notify import EXIT_ABORTED, EXIT_FAILURE, EXIT_USAGE
 from .output import emit, enable_json, error, json_enabled, register
 
 _VERSION = _pkg_version("fuelrod-backup")
@@ -65,6 +65,11 @@ console = register(Console())
 # Reusable option definitions
 _CONFIG_OPT = typer.Option("--config", "-c", help="Path to .backup or .env config file.", exists=True, dir_okay=False)
 _DOCKER_OPT = typer.Option("--docker/--no-docker", help="Override USE_DOCKER from config (highest priority).")
+_VERBOSE_OPT = typer.Option(
+    "--verbose", "-v", count=True,
+    help="Show every rclone command and file as it happens (-v), or rclone's debug output (-vv).",
+)
+_RCLONE_OPT = typer.Option("--rclone", help="Path to the rclone executable, e.g. D:/tools/rclone.exe (RCLONE_CMD).")
 _DB_TYPE_OPT = typer.Option("--db-type", "-t", help="Database engine: postgres | mariadb | mssql.")
 _JSON_OPT = typer.Option(
     "--json",
@@ -401,26 +406,62 @@ def list_cmd(
 
 @app.command("schedule")
 def schedule_cmd(
-        cron: Annotated[str, typer.Option("--cron", help="Cron expression, e.g. '0 2 * * *'.")] = "0 2 * * *",
+        job: Annotated[
+            str,
+            typer.Option("--job", "-j", help="What to schedule: backup, pull, push, quota, verify or doctor."),
+        ] = "backup",
+        cron: Annotated[
+            str | None,
+            typer.Option("--cron", help="Cron expression, e.g. '0 2 * * *' (default depends on the job)."),
+        ] = None,
         log_file: Annotated[
-            str, typer.Option("--log", help="File the job appends its output to.")
-        ] = "fuelrod-backup.log",
+            str | None, typer.Option("--log", help="File the job appends its output to.")
+        ] = None,
+        extra: Annotated[
+            list[str],
+            typer.Option("--arg", "-a", help="Extra option for the job, e.g. --arg '--latest 5' (repeatable)."),
+        ] = [],
         apply: Annotated[bool, typer.Option("--apply", help="Install the job instead of only printing it.")] = False,
+        list_jobs: Annotated[bool, typer.Option("--list", "-l", help="List the installed jobs.")] = False,
+        remove: Annotated[bool, typer.Option("--remove", help="Remove the installed entry for --job.")] = False,
         db_type: Annotated[str | None, _DB_TYPE_OPT] = None,
         config_file: Annotated[Path | None, _CONFIG_OPT] = None,
 ) -> None:
-    """Generate (or with --apply, install) a scheduled non-interactive backup.
+    """Schedule backup, pull, push, quota, verify or doctor runs (cron / Windows Task Scheduler).
 
-    Prints a crontab line on Linux/macOS or a schtasks command on Windows.
+    Each job has its own entry, so `--job backup`, `--job push` and `--job pull` can all be installed and
+    are replaced independently. Prints the crontab line or schtasks command; --apply installs it,
+    --list shows what is installed and --remove deletes one.
+
+    Example: fuelrod-backup schedule --job pull --cron "30 3 * * *" --apply
     """
     import subprocess
 
     from . import schedule as sched
 
+    if job not in sched.JOBS:
+        _fail(f"Unknown job '{job}'. Choose from: {', '.join(sched.JOBS)}", EXIT_USAGE)
+    if list_jobs:
+        jobs = sched.list_jobs()
+        if json_enabled():
+            emit({"command": "schedule", "jobs": [j.__dict__ for j in jobs]})
+        elif not jobs:
+            console.print("[yellow]No fuelrod-backup jobs are scheduled.[/]")
+        else:
+            for j in jobs:
+                console.print(f"  [bold]{j.job:<8}[/] {j.when}  [dim]{j.command}[/]", soft_wrap=True)
+        return
+    if remove:
+        if sched.remove_job(job):
+            console.print(f"[green]Removed the scheduled {job} job.[/]")
+        else:
+            _fail(f"No scheduled {job} job was found.", EXIT_FAILURE)
+        return
+
     _validate_db_type(db_type)
-    command = sched.build_command(db_type, str(config_file.resolve()) if config_file else None)
     try:
-        text, argv = sched.render(cron, command, log_file)
+        command = sched.build_command(job, db_type, str(config_file.resolve()) if config_file else None, list(extra))
+        text, argv = sched.render(job, cron or sched.default_cron(job), command, log_file or sched.default_log(job))
     except ValueError as exc:
         _fail(str(exc), EXIT_USAGE)
     console.print(text, markup=False, soft_wrap=True)
@@ -429,13 +470,14 @@ def schedule_cmd(
         console.print("Re-run with --apply to install it.")
         return
     try:
+        Path(log_file or sched.default_log(job)).parent.mkdir(parents=True, exist_ok=True)
         if argv:
             subprocess.run(argv, check=True)  # noqa: S603
         else:
-            sched.install_cron(text)
+            sched.install_cron(job, text)
     except (subprocess.CalledProcessError, OSError) as exc:
         _fail(f"Could not install the schedule: {exc}", EXIT_FAILURE)
-    console.print("[green]Schedule installed.[/]")
+    console.print(f"[green]Scheduled the {job} job.[/]")
 
 
 @app.command("doctor")
@@ -678,11 +720,33 @@ def init_config(
             Path,
             typer.Option("--output", "-o", help="Path for the config file.", dir_okay=False),
         ] = None,
+        section: Annotated[
+            list[str],
+            typer.Option(
+                "--section", "-s",
+                help="Configure only this group of settings (repeatable, or 'all'): "
+                     "storage, backup, encryption, notifications, push, quota, pull, rclone, n8n.",
+            ),
+        ] = [],
+        advanced: Annotated[
+            bool,
+            typer.Option("--advanced", help="Skip the connection wizard and pick which setting groups to review."),
+        ] = False,
+        list_settings: Annotated[
+            bool,
+            typer.Option("--list", "-l", help="List every setting with its current value, default and description."),
+        ] = False,
         as_json: Annotated[bool, _JSON_OPT] = False,
 ) -> None:
-    """Create or update a .backup config file interactively."""
+    """Create or update a .backup config file interactively.
+
+    The main wizard covers the connection and storage basics and then offers the advanced settings
+    (retention, hooks, notifications, encryption, push/pull, quota, rclone, n8n). Re-running it only
+    changes what you answer; every other line of the file is kept.
+    """
     from . import prompt as q
     from .config import _find_config_file, _parse_env_file, user_config_dir
+    from .settings import SECTIONS
 
     if output is None:
         output = user_config_dir() / ".backup"
@@ -690,6 +754,16 @@ def init_config(
     updating = output.exists()
 
     _enable_json(as_json)
+    if list_settings:
+        _print_settings(output, as_json)
+        return
+    if section or advanced:
+        names = None if not section else (list(SECTIONS) if "all" in section else list(dict.fromkeys(section)))
+        unknown = [n for n in names or [] if n not in SECTIONS]
+        if unknown:
+            _fail(f"Unknown section(s): {', '.join(unknown)}. Choose from: {', '.join(SECTIONS)} or all.", EXIT_USAGE)
+        _run_advanced(q, output, names)
+        return
     if as_json:
         import json
         cfg = load_config(None)
@@ -743,6 +817,19 @@ def init_config(
     else:
         _init_single_engine(q, output, updating, existing_cfg, existing_raw)
 
+    if output.is_file() and q.confirm(
+        "Configure an rclone remote to pull backups from?", default=False
+    ).ask():
+        _save_pull_source(q, output)
+    if output.is_file() and q.confirm(
+        "Configure an rclone remote to push backups to?", default=False
+    ).ask():
+        _save_remote_target(q, output, "PUSH")
+    if output.is_file() and q.confirm(
+        "Review the advanced settings now? (retention, hooks, notifications, encryption, quota, ...)", default=False,
+    ).ask():
+        _run_advanced(q, output, None)
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  init helpers
@@ -761,32 +848,164 @@ def _init_generic_remote(q, output: Path, updating: bool, existing_raw: dict[str
     return {"REMOTE": remote} if remote else {}
 
 
-def _update_config_keys(output: Path, keys: dict[str, str]) -> None:
-    """Merge *keys* into the config file at *output*, preserving other lines."""
-    lines = output.read_text(encoding="utf-8").splitlines()
-    new_lines = []
-    set_keys = set()
+def _ask_setting(q, setting, current: str | None) -> str | None:
+    """Prompt for one setting. Returns the normalised value, or None to leave it untouched."""
+    from .settings import normalise
 
-    for line in lines:
+    label = f"{setting.help} ({setting.key})"
+    shown = current if current is not None else setting.default
+    if setting.kind == "bool":
+        is_on = shown.strip().lower() in ("true", "1", "yes", "on")
+        return "true" if q.confirm(label, default=is_on).ask() else "false"
+    if setting.kind == "choice":
+        picked = q.select(
+            label,
+            choices=[q.Choice(c or "(none)", value=c) for c in setting.choices],
+            default=shown if shown in setting.choices else setting.choices[0],
+        ).ask()
+        return picked if picked is not None else None
+    if setting.kind == "secret":
+        value = q.password(f"{label} [blank = keep current]").ask()
+        return value or None
+    for _attempt in range(3):
+        raw = q.text(label, default=shown).ask()
+        if raw is None:
+            return None
+        try:
+            return normalise(setting, raw)
+        except ValueError as exc:
+            console.print(f"  [red]{exc}[/]")
+    console.print("  [yellow]Too many invalid answers; keeping the current value.[/]")
+    return None
+
+
+def _run_advanced(q, output: Path, sections: list[str] | None) -> None:
+    """Walk the advanced setting groups and merge the answers into the config file."""
+    from . import settings as st
+    from .config import _parse_env_file
+
+    existing_raw = _parse_env_file(output) if output.is_file() else {}
+    if sections is None:
+        sections = q.checkbox(
+            "Which settings do you want to review?",
+            choices=[q.Choice(title=title, value=name) for name, title in st.SECTIONS.items()],
+        ).ask() or []
+        if not sections:
+            console.print("[yellow]Nothing selected.[/]")
+            return
+
+    values = dict(existing_raw)
+    changes: dict[str, str] = {}
+    removals: set[str] = set()
+    for name in sections:
+        console.print()
+        console.rule(f"[bold cyan]{st.SECTIONS[name]}[/]")
+        for setting in st.in_section(name):
+            if not st.applies(setting, values):
+                continue
+            answer = _ask_setting(q, setting, values.get(setting.key))
+            if answer is None:
+                continue
+            present = setting.key in existing_raw
+            if answer == "":
+                if present:
+                    removals.add(setting.key)
+                    changes.pop(setting.key, None)
+                    values.pop(setting.key, None)
+                continue
+            if answer == existing_raw.get(setting.key) or (not present and answer == setting.default):
+                values[setting.key] = answer
+                changes.pop(setting.key, None)
+                continue
+            changes[setting.key] = answer
+            values[setting.key] = answer
+            removals.discard(setting.key)
+
+    if not changes and not removals:
+        console.print("\n[yellow]No changes.[/]")
+        return
+    console.print()
+    for key, value in changes.items():
+        shown = "***" if st.BY_KEY[key].kind == "secret" else value
+        console.print(f"  [green]+[/] {key}={shown}")
+    for key in sorted(removals):
+        console.print(f"  [red]-[/] {key}")
+    if not q.confirm(f"Save these changes to {output}?", default=True).ask():
+        console.print("[yellow]Aborted.[/]")
+        raise typer.Exit(EXIT_ABORTED)
+    _write_config(output, [f"{k}={v}" for k, v in changes.items()], True, remove=removals)
+
+
+def _print_settings(output: Path, as_json: bool) -> None:
+    """`init --list`: every setting, where it is configured, its current value and its default."""
+    from rich.table import Table
+
+    from . import settings as st
+    from .config import _parse_env_file
+
+    raw = _parse_env_file(output) if output.is_file() else {}
+    rows = []
+    for s in st.SETTINGS:
+        rows.append({
+            "key": s.key, "group": s.group, "type": s.kind, "default": s.default,
+            "value": "***" if s.kind == "secret" and s.key in raw else raw.get(s.key),
+            "configure_with": f"init --section {s.group}" if s.advanced else f"{s.wizard}",
+            "description": s.help,
+        })
+    if as_json:
+        import json
+
+        print(json.dumps({"config_file": str(output), "settings": rows}, indent=2))
+        return
+    table = Table(show_header=True, header_style="bold")
+    for col in ("Key", "Group", "Current", "Default", "Set with", "Description"):
+        table.add_column(col, overflow="fold")
+    for r in rows:
+        table.add_row(
+            r["key"], r["group"], r["value"] if r["value"] is not None else "[dim](not set)[/]", r["default"] or "-",
+            r["configure_with"], r["description"],
+        )
+    console.print(f"[dim]{output}[/]")
+    console.print(table)
+
+
+def _update_config_keys(output: Path, keys: dict[str, str], remove: set[str] | None = None) -> None:
+    """
+    Merge *keys* into the config file at *output* without touching anything else.
+
+    Existing ``KEY=value`` lines (also ``export KEY=value``) are updated in place, new keys are
+    appended, and every other line — comments, blank lines, keys this wizard does not manage —
+    is kept exactly as it is. Keys named in *remove* are deleted.
+    """
+    remove = remove or set()
+    new_lines: list[str] = []
+    set_keys: set[str] = set()
+
+    for line in output.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            new_lines.append(line)
-            continue
-        if "=" in stripped:
-            key, val = stripped.split("=", 1)
+        if stripped and not stripped.startswith("#") and "=" in stripped:
+            key = stripped.split("=", 1)[0].removeprefix("export ").strip()
+            if key in remove:
+                continue
             if key in keys:
-                new_lines.append(f"{key}={keys[key]}")
-                set_keys.add(key)
+                if key not in set_keys:  # a duplicated key keeps only its first line
+                    new_lines.append(f"{key}={keys[key]}")
+                    set_keys.add(key)
                 continue
         new_lines.append(line)
 
     # Add new keys at the end
-    for key, val in keys.items():
-        if key not in set_keys:
-            new_lines.append(f"{key}={val}")
+    missing = [key for key in keys if key not in set_keys]
+    if missing:
+        if new_lines and new_lines[-1].strip():
+            new_lines.append("")
+        new_lines.extend(f"{key}={keys[key]}" for key in missing)
 
-    output.write_text("\n".join(new_lines), encoding="utf-8")
-    output.chmod(0o600)
+    output.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+    try:
+        output.chmod(0o600)
+    except OSError:
+        pass
 
 
 def _init_s3_remote(q, output: Path, updating: bool, existing_raw: dict[str, str]) -> dict[str, str]:
@@ -851,13 +1070,31 @@ def _init_s3_remote(q, output: Path, updating: bool, existing_raw: dict[str, str
         "S3_SECRET_ACCESS_KEY": secret_key,
     }
 
-def _write_config(output: Path, lines: list[str], updating: bool) -> None:
+def _write_config(output: Path, lines: list[str], updating: bool, remove: set[str] | None = None) -> None:
+    """
+    Save the wizard's *lines*. A new file is written in full. An existing file is merged instead:
+    the wizard's keys are updated in place and everything it does not ask about (NOTIFY_*, RETENTION,
+    PULL_REMOTE, PUSH_*, ENCRYPT_*, hooks, comments ...) is preserved. The previous file is kept as
+    ``<name>.bak``. Keys in *remove* are deleted (for example an engine you just deselected).
+    """
+    import shutil
+
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text("\n".join(lines), encoding="utf-8")
-    try:
-        output.chmod(0o600)
-    except OSError:
-        pass
+    if output.is_file() and output.read_text(encoding="utf-8").strip():
+        shutil.copy2(output, output.with_name(output.name + ".bak"))
+        managed: dict[str, str] = {}
+        for line in lines:
+            stripped = line.strip()
+            if stripped and not stripped.startswith("#") and "=" in stripped:
+                key, value = stripped.split("=", 1)
+                managed[key.strip()] = value
+        _update_config_keys(output, managed, remove)
+    else:
+        output.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        try:
+            output.chmod(0o600)
+        except OSError:
+            pass
     verb = "updated" if updating else "written"
     console.print(f"\n[bold green]✓[/] Config {verb}: [bold]{output}[/]")
     console.print("  [yellow]Note:[/] This file contains a plaintext password — keep it private.")
@@ -1086,7 +1323,16 @@ def _init_multi_engine(q, output: Path, updating: bool, existing_raw: dict[str, 
             if gen_keys:
                 lines.append("")
 
-    _write_config(output, lines, updating)
+    # An engine that was configured before but is no longer selected must really go away,
+    # otherwise --all-engines would still pick up its PG_/MY_/MS_ credentials.
+    dropped = {
+        f"{prefixes[engine]}{short}"
+        for engine in prefixes
+        if engine not in selected_engines
+        for short in ("USERNAME", "PASSWORD", "HOST", "PORT", "SERVICE", "USE_DOCKER")
+        if f"{prefixes[engine]}{short}" in existing_raw
+    }
+    _write_config(output, lines, updating, remove=dropped)
 
 
 def _init_single_engine(q, output: Path, updating: bool, existing_cfg, existing_raw: dict[str, str]) -> None:
@@ -1337,6 +1583,175 @@ def sync_init(
         console.print("\n[yellow]No changes made to config.[/]")
 
 
+def _init_rclone_target(
+    q, existing_raw: dict[str, str], prefix: str, names: list[str], dir_prompt: str, *, must_exist: bool,
+    preselected: str | None = None,
+) -> dict[str, str]:
+    """Collect <prefix>_REMOTE from the rclone remotes already configured on this machine."""
+    from .pull import _lsf_dirs
+    from .storage import StorageError
+
+    ex_name, _, ex_sub = existing_raw.get(f"{prefix}_REMOTE", "").partition(":")
+    name = preselected or q.select(
+        "rclone remote",
+        choices=[q.Choice(f"{n}:", value=n) for n in names],
+        default=ex_name if ex_name in names else names[0],
+    ).ask()
+    if not name:
+        return {}
+    sub = (q.text(dir_prompt, default=ex_sub).ask() or "").strip().strip("/")
+    spec = f"{name}:{sub}"
+
+    if q.confirm("Test the connection now?", default=True).ask():
+        try:
+            folders = _lsf_dirs(spec, [])
+        except StorageError as exc:
+            if not must_exist and "not found" in str(exc).lower():
+                console.print("  [green]✓ Connected.[/] The directory does not exist yet; it is created on first push.")
+            else:
+                console.print(f"  [bold red]✗ Connection test failed:[/] {exc}")
+                if not q.confirm("Save these settings anyway?", default=False).ask():
+                    return {}
+        else:
+            found = ", ".join(folders) if folders else "no sub-folders"
+            console.print(f"  [green]✓ Connected.[/] Top-level folders: [bold]{found}[/]")
+
+    return {f"{prefix}_REMOTE": spec}
+
+
+def _collect_push_destinations(q, existing_raw: dict[str, str], names: list[str]) -> dict[str, str]:
+    """Collect one or several push destinations (rclone remotes and/or local folders) into PUSH_REMOTE."""
+    current = [d.strip() for d in existing_raw.get("PUSH_REMOTE", "").split("|") if d.strip()]
+    dests: list[str] = []
+    if current:
+        console.print("  Current destinations: " + ", ".join(current))
+        if q.confirm("Keep them?", default=True).ask():
+            dests = list(current)
+
+    while True:
+        spec = ""
+        if names:
+            choices = [q.Choice(f"{n}:  (rclone remote)", value=n) for n in names]
+            choices.append(q.Choice("A local folder (e.g. a OneDrive or network folder)", value=""))
+            pick = q.select("Add a destination", choices=choices, default=names[0]).ask()
+            if pick:
+                added = _init_rclone_target(
+                    q, {}, "PUSH", names, "Path inside the remote to upload into (blank = remote root)",
+                    must_exist=False, preselected=pick,
+                )
+                spec = added.get("PUSH_REMOTE", "")
+        if not spec and not (names and pick):
+            hint = "Folder path, e.g. D:/OneDrive/Backups" if names else "Destination (folder or rclone name:path)"
+            spec = (q.text(f"{hint}, blank to finish", default="").ask() or "").strip()
+            if "|" in spec:
+                console.print("  [red]A destination cannot contain '|'.[/]")
+                spec = ""
+            if spec:
+                from .storage import parse_remote
+
+                folder = Path(spec).expanduser()
+                if parse_remote(spec).provider == "local" and not folder.is_dir():
+                    if q.confirm(f"{folder} does not exist. Create it?", default=True).ask():
+                        folder.mkdir(parents=True, exist_ok=True)
+                    else:
+                        spec = ""
+        if spec and spec not in dests:
+            dests.append(spec)
+        if not q.confirm("Add another destination?", default=False).ask():
+            break
+    return {"PUSH_REMOTE": "|".join(dests)} if dests else {}
+
+
+def _save_remote_target(q, output: Path, prefix: str) -> None:
+    from .config import _parse_env_file
+    from .storage import list_remotes, rclone_available
+
+    pull = prefix == "PULL"
+    existing_raw = _parse_env_file(output) if output.is_file() else {}
+    title = (
+        "Pull source (download backups from an rclone remote)" if pull
+        else "Push target (upload backups to an rclone remote)"
+    )
+    console.print()
+    console.rule(f"[bold cyan]{title}[/]")
+
+    names: list[str] = []
+    if rclone_available():
+        try:
+            names = list_remotes()
+        except SystemExit:  # list_remotes exits when rclone cannot list remotes
+            names = []
+
+    if not pull:
+        keys = _collect_push_destinations(q, existing_raw, names)
+    elif names:
+        keys = _init_rclone_target(
+            q, existing_raw, prefix, names,
+            "Path inside the remote (blank = remote root)" if pull
+            else "Path inside the remote to upload into (blank = remote root)",
+            must_exist=pull,
+        )
+    else:
+        console.print(
+            "  [yellow]No rclone remotes found.[/] Create one with [bold]rclone config[/], then run this again."
+        )
+        spec = (q.text(
+            "rclone remote spec (name:path), blank to cancel", default=existing_raw.get(f"{prefix}_REMOTE", ""),
+        ).ask() or "").strip()
+        keys = {f"{prefix}_REMOTE": spec} if spec else {}
+
+    label = "Pull source" if pull else "Push target"
+    if not keys:
+        console.print()
+        console.print(f"[yellow]No {label.lower()} configured.[/]")
+        return
+    if not output.is_file():
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text("", encoding="utf-8")
+    _update_config_keys(output, keys)
+    console.print()
+    console.print(f"[bold green]✓[/] {label} saved to [bold]{output}[/]")
+    verb = "pull" if pull else "push"
+    action = "download backups from" if pull else "upload backups to"
+    console.print(f"  Run [bold]fuelrod-backup {verb}[/] to {action} it.")
+
+
+def _save_pull_source(q, output: Path) -> None:
+    _save_remote_target(q, output, "PULL")
+
+
+@app.command("pull-init")
+def pull_init(
+        output: Annotated[
+            Path,
+            typer.Option("--output", "-o", help="Path for the config file.", dir_okay=False),
+        ] = None,
+) -> None:
+    """Configure the server `pull` downloads backups from (PULL_REMOTE), without a full init."""
+    from . import prompt as q
+    from .config import user_config_dir
+
+    if output is None:
+        output = user_config_dir() / ".backup"
+    _save_pull_source(q, output.resolve())
+
+
+@app.command("push-init")
+def push_init(
+        output: Annotated[
+            Path,
+            typer.Option("--output", "-o", help="Path for the config file.", dir_okay=False),
+        ] = None,
+) -> None:
+    """Configure the server `push` (sync) uploads backups to (PUSH_REMOTE), without a full init."""
+    from . import prompt as q
+    from .config import user_config_dir
+
+    if output is None:
+        output = user_config_dir() / ".backup"
+    _save_remote_target(q, output.resolve(), "PUSH")
+
+
 @app.command("n8n-backup")
 def n8n_backup_cmd(
         no_interactive: Annotated[
@@ -1387,15 +1802,298 @@ def n8n_restore_cmd(
     run_n8n_restore(cfg, service=service, backup_file=backup_file, dry_run=dry_run, verbose=verbose)
 
 
-@app.command("sync")
-def sync_cmd(
+@app.command("quota")
+def quota_cmd(
+        remote: Annotated[
+            list[str],
+            typer.Option(
+                "--remote", "-r",
+                help="Destination to measure: rclone remote or local folder; repeatable "
+                     "(default: PUSH_REMOTE, then REMOTE / S3_*).",
+            ),
+        ] = [],
+        quota: Annotated[
+            str | None,
+            typer.Option("--quota", "-q", help="Size limit, e.g. 500M, 50G, 1T (default: PUSH_QUOTA)."),
+        ] = None,
+        target: Annotated[
+            int | None,
+            typer.Option("--target", help="Prune down to this percent of the quota (default: PUSH_QUOTA_TARGET, 90)."),
+        ] = None,
+        keep: Annotated[
+            int | None,
+            typer.Option(
+                "--keep",
+                help="Newest backups per database that are never pruned (default: PUSH_QUOTA_KEEP, 1).",
+            ),
+        ] = None,
+        prune: Annotated[
+            bool,
+            typer.Option("--prune", help="Delete the oldest backups until usage fits (default: report only)."),
+        ] = False,
+        dry_run: Annotated[
+            bool,
+            typer.Option("--dry-run", "-n", help="With --prune: show what would be deleted without deleting."),
+        ] = False,
+        rclone: Annotated[str | None, _RCLONE_OPT] = None,
+        as_json: Annotated[bool, _JSON_OPT] = False,
+        config_file: Annotated[Path | None, _CONFIG_OPT] = None,
+) -> None:
+    """Show how much of your remote quota the backups use, and optionally prune the oldest.
+
+    Usage is the total size of the files under the remote path, compared with the quota you
+    set. With --prune, the oldest files are deleted until usage is at --target percent of the
+    quota; the newest --keep backups of every database are never deleted. Exits 1 when the
+    remote is still over quota, so it can run from cron or a monitor (notifications fire too).
+    """
+    from .notify import notify, report_delivery_errors
+    from .quota import enforce_quota, parse_size, print_report
+    from .storage import (
+        StorageError,
+        _die,
+        parse_remote,
+        provider_args,
+        rclone_available,
+        use_rclone,
+    )
+
+    _enable_json(as_json)
+    cfg = load_config(config_file)
+    if rclone:
+        use_rclone(rclone)
+    if not rclone_available():
+        _die("rclone not found in PATH. Install it from https://rclone.org/install/ or pass --rclone PATH.")
+
+    from .storage import resolve_destinations
+
+    specs = resolve_destinations(cfg, list(remote) or None)
+    if not specs:
+        _fail("No destination configured. Pass --remote or set PUSH_REMOTE (see `push-init`).", EXIT_USAGE)
+    quota_text = (quota or cfg.push_quota).strip()
+    if not quota_text:
+        _fail("No quota set. Pass --quota 50G or set PUSH_QUOTA in your config.", EXIT_USAGE)
+    try:
+        limit = parse_size(quota_text)
+        targets = [parse_remote(spec) for spec in specs]
+    except ValueError as exc:
+        _fail(str(exc), EXIT_USAGE)
+
+    reports = []
+    unreadable = 0
+    for tgt in targets:
+        location = tgt.location
+        try:
+            report = enforce_quota(
+                location, provider_args(tgt.provider, cfg), quota=limit,
+                target_pct=target if target is not None else cfg.push_quota_target,
+                keep=keep if keep is not None else cfg.push_quota_keep,
+                prune=prune, dry_run=dry_run,
+            )
+        except StorageError as exc:
+            unreadable += 1
+            if json_enabled():
+                reports.append({"remote": location, "error": str(exc), "over_quota": True})
+            else:
+                console.print(f"[bold]Destination[/] {location}")
+                console.print(f"  [bold red]Could not read it:[/] {exc}")
+            continue
+        reports.append(report)
+        if not json_enabled():
+            console.print(f"[bold]Destination[/] {location}")
+            print_report(report, table=True)
+            if report.over and not prune:
+                console.print("  Run with [bold]--prune[/] to delete the oldest backups until usage fits.")
+
+    over = unreadable > 0 or any(not isinstance(r, dict) and r.over for r in reports)
+    if json_enabled():
+        rows = [r if isinstance(r, dict) else r.to_dict() for r in reports]
+        emit({"command": "quota", "status": "fail" if over else "ok", "destinations": rows})
+
+    usable = [r for r in reports if not isinstance(r, dict)]
+    worst = max(usable, key=lambda r: r.percent, default=None)
+    summary = (
+        f"{worst.percent:.0f}% of quota used on {worst.remote}" if worst else "no destination could be read"
+    ) + (f" ({unreadable} unreadable)" if unreadable else "")
+    errors = notify(
+        status="failure" if over else "success", command="quota", cfg=cfg, summary=summary,
+        exit_code=EXIT_FAILURE if over else 0,
+    )
+    report_delivery_errors(errors, console)
+    if over:
+        raise typer.Exit(code=EXIT_FAILURE)
+
+
+@app.command("pull")
+def pull_cmd(
         remote: Annotated[
             str | None,
             typer.Option(
                 "--remote", "-r",
-                help="Target rclone remote, e.g. s3:my-bucket/backups, b2:bucket, sftp:host:/srv/backups.",
+                help="Source rclone remote, e.g. s3:my-bucket/backups (default: REMOTE / S3_*).",
             ),
         ] = None,
+        dest: Annotated[
+            Path | None,
+            typer.Option("--dest", help="Local destination directory (default: BASE_DIR).", file_okay=False),
+        ] = None,
+        engine: Annotated[
+            list[str],
+            typer.Option("--engine", "-e", help="Only pull these engine folders (repeatable)."),
+        ] = [],
+        database: Annotated[
+            list[str],
+            typer.Option("--db", "-d", help="Only pull these database folders (repeatable)."),
+        ] = [],
+        include: Annotated[
+            list[str],
+            typer.Option("--include", "-i", help="rclone glob to include (repeatable), e.g. *.dump.gz."),
+        ] = [],
+        exclude: Annotated[
+            list[str],
+            typer.Option(
+                "--exclude", "-x",
+                help="Glob of files to never download (repeatable), e.g. '*_inc.*', 'manifest_*.txt' or "
+                     "'postgres/sonar/*'. Also PULL_EXCLUDE in config (| separated).",
+            ),
+        ] = [],
+        since: Annotated[
+            int | None,
+            typer.Option("--since", help="Only pull files modified in the last N days."),
+        ] = None,
+        parallel: Annotated[
+            int,
+            typer.Option("--parallel", "-j", help="Engine/database folders to download at the same time."),
+        ] = 4,
+        transfers: Annotated[
+            int,
+            typer.Option("--transfers", help="Parallel file transfers inside each folder job."),
+        ] = 4,
+        checkers: Annotated[
+            int,
+            typer.Option("--checkers", help="Parallel checkers inside each folder job."),
+        ] = 8,
+        bwlimit: Annotated[
+            str | None,
+            typer.Option("--bwlimit", help="Bandwidth limit per job, e.g. 10M (rclone syntax)."),
+        ] = None,
+        overwrite: Annotated[
+            bool,
+            typer.Option("--overwrite", help="Download everything again, replacing local files (ignores history)."),
+        ] = False,
+        ignore_history: Annotated[
+            bool,
+            typer.Option(
+                "--ignore-history",
+                help="Also download files that were pulled before but are no longer in the local folder.",
+            ),
+        ] = False,
+        delete_remote: Annotated[
+            bool | None,
+            typer.Option(
+                "--delete-remote/--no-delete-remote",
+                help="After pulling, delete the files on the server that are verified to be in the local folder "
+                     "with the same size (default: PULL_DELETE_REMOTE, false). Needs --yes.",
+            ),
+        ] = None,
+        keep_remote: Annotated[
+            int | None,
+            typer.Option(
+                "--keep-remote",
+                help="With --delete-remote: newest backups per database to leave on the server (default: "
+                     "PULL_KEEP_REMOTE, 0).",
+            ),
+        ] = None,
+        verify: Annotated[
+            bool,
+            typer.Option("--verify", help="With --delete-remote: also compare checksums (rclone check) first."),
+        ] = False,
+        yes: Annotated[
+            bool,
+            typer.Option("--yes", "-y", help="Confirm deleting server files without asking."),
+        ] = False,
+        no_manifest: Annotated[
+            bool,
+            typer.Option(
+                "--no-manifest",
+                help="Do not read manifest.json from the server; list its folders instead (slower).",
+            ),
+        ] = False,
+        dry_run: Annotated[
+            bool,
+            typer.Option("--dry-run", "-n", help="Show what would be downloaded; change nothing."),
+        ] = False,
+        rclone: Annotated[str | None, _RCLONE_OPT] = None,
+        verbose: Annotated[int, _VERBOSE_OPT] = 0,
+        as_json: Annotated[bool, _JSON_OPT] = False,
+        config_file: Annotated[Path | None, _CONFIG_OPT] = None,
+) -> None:
+    """Download backups from an rclone remote to local storage, in parallel.
+
+    Expects the layout `sync` uploads: <remote>/<engine>/<database>/<files>. Each
+    engine/database folder is its own rclone job and --parallel jobs run at once.
+    Never deletes anything, and skips files that already exist locally unless
+    --overwrite is given.
+
+    Use --remote for any rclone remote you have configured (rclone config), or set
+    PULL_REMOTE so a plain `pull` works.
+    """
+    from .pull import run_pull
+    from .storage import set_verbose, use_rclone
+
+    _enable_json(as_json)
+    for e in engine:
+        _validate_db_type(e)
+    cfg = load_config(config_file)
+    if rclone:
+        use_rclone(rclone)
+    set_verbose(verbose)
+    deleting = cfg.pull_delete_remote if delete_remote is None else delete_remote
+    if deleting and not dry_run and not yes and not json_enabled() and sys.stdin.isatty():
+        from . import prompt as q
+
+        console.print(
+            "[bold yellow]--delete-remote removes files on the server[/] once they are verified in the local folder."
+        )
+        yes = bool(q.confirm("Delete the pulled files on the server?", default=False).ask())
+        if not yes:
+            console.print("[yellow]Aborted.[/]")
+            raise typer.Exit(code=EXIT_ABORTED)
+    code = run_pull(
+        cfg,
+        remote=remote or None,
+        dest=dest,
+        engines=list(engine) or None,
+        databases=list(database) or None,
+        include_patterns=list(include) or None,
+        since=since,
+        workers=parallel,
+        transfers=transfers,
+        checkers=checkers,
+        bwlimit=bwlimit,
+        dry_run=dry_run,
+        overwrite=overwrite,
+        ignore_history=ignore_history,
+        delete_remote=delete_remote,
+        keep_remote=keep_remote,
+        verify=verify,
+        yes=yes,
+        use_manifest=not no_manifest,
+        exclude_patterns=list(exclude) or None,
+    )
+    if code:
+        raise typer.Exit(code=code)
+
+
+@app.command("sync")
+def sync_cmd(
+        remote: Annotated[
+            list[str],
+            typer.Option(
+                "--remote", "-r",
+                help="Destination: an rclone remote (s3:bucket/backups, b2:bucket, ...) or a local folder "
+                     "(D:/OneDrive/Backups). Repeat for several destinations; default PUSH_REMOTE.",
+            ),
+        ] = [],
         dry_run: Annotated[
             bool,
             typer.Option("--dry-run", "-d", help="Show what would happen — no files moved or deleted."),
@@ -1409,9 +2107,13 @@ def sync_cmd(
             typer.Option("--include", "-i", help="Glob pattern to include (repeatable, overrides INCLUDE_FILES)."),
         ] = [],
         keep_local: Annotated[
-            bool,
-            typer.Option("--keep-local", help="Do NOT delete local files after a successful upload."),
-        ] = False,
+            bool | None,
+            typer.Option(
+                "--keep-local/--delete-local",
+                help="Keep or delete the local files after a successful upload (default: PUSH_DELETE_LOCAL, true). "
+                     "Keep them if you also `pull`, or the next pull downloads them again.",
+            ),
+        ] = None,
         list_remotes: Annotated[
             bool,
             typer.Option("--list-remotes", help="List the rclone remotes configured on this host and exit."),
@@ -1440,26 +2142,49 @@ def sync_cmd(
             list[str],
             typer.Option("--schema", "-s", help="Only upload artifacts for these databases/schemas (repeatable)."),
         ] = [],
+        latest: Annotated[
+            int | None,
+            typer.Option(
+                "--latest", "-L",
+                help="Upload only the newest N backups of each database (default: PUSH_LATEST, 3). 0 = all files.",
+            ),
+        ] = None,
+        quota: Annotated[
+            str | None,
+            typer.Option(
+                "--quota", "-q",
+                help="Remote size limit, e.g. 50G (default: PUSH_QUOTA). When set, the oldest remote backups are "
+                     "pruned to fit it after the upload, and the 2-day age prune only runs if --days is given.",
+            ),
+        ] = None,
+        rclone: Annotated[str | None, _RCLONE_OPT] = None,
+        verbose: Annotated[int, _VERBOSE_OPT] = 0,
         as_json: Annotated[bool, _JSON_OPT] = False,
         config_file: Annotated[Path | None, _CONFIG_OPT] = None,
 ) -> None:
     """Upload backups to any rclone remote and prune old files there.
 
+    Also available as `push`. Set PUSH_REMOTE in config to use a configured rclone
+    remote by default.
+
     Works with every backend rclone supports: Google Drive, S3, S3-compatible
     (MinIO, Wasabi), Backblaze B2, SFTP, Azure Blob, WebDAV. Local files are
     deleted only after a successful upload.
     """
-    from .storage import default_remote, run_sync
+    from .storage import run_sync, set_verbose, use_rclone
 
     _enable_json(as_json)
     cfg = load_config(config_file)
+    if rclone:
+        use_rclone(rclone)
+    set_verbose(verbose)
     code = run_sync(
         cfg,
-        remote=remote or default_remote(cfg),
+        remote=list(remote) or None,
         dry_run=dry_run,
         age_days=days,
         include_patterns=list(include) or None,
-        delete_local=not keep_local,
+        delete_local=cfg.push_delete_local if keep_local is None else not keep_local,
         show_remotes=list_remotes,
         transfers=transfers,
         checkers=checkers,
@@ -1467,9 +2192,14 @@ def sync_cmd(
         until=until,
         schemas=list(schema),
         interactive=not no_interactive,
+        latest=latest,
+        quota=quota,
     )
     if code:
         raise typer.Exit(code=code)
+
+
+app.command("push", help="Upload backups to an rclone remote (alias of sync).")(sync_cmd)
 
 
 @app.command("migrate")

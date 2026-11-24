@@ -74,4 +74,4 @@ def test_hook_failure_raises():
 
 def test_render_rejects_bad_cron():
     with pytest.raises(ValueError):
-        render("not a cron", ["x"], "log")
+        render("backup", "not a cron", ["x"], "log")
