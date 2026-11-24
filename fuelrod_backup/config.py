@@ -47,6 +47,19 @@ class Config:
     hook_pre_backup: str = ""      # PRE_BACKUP_HOOK — command; non-zero exit aborts the backup
     hook_post_backup: str = ""     # POST_BACKUP_HOOK — command; failure only warns
     size_warn_ratio: float = 0.5   # SIZE_WARN_RATIO — warn when a dump is < ratio x previous (0 = off)
+    rclone_cmd: str = "rclone"     # RCLONE_CMD — rclone executable (name or full path, e.g. D:/tools/rclone.exe)
+    # Push/pull defaults: a configured rclone remote
+    push_quota: str = ""           # PUSH_QUOTA — size limit for the remote backup path, e.g. 50G ("" = off)
+    push_quota_target: int = 90    # PUSH_QUOTA_TARGET — prune down to this percent of the quota
+    push_quota_keep: int = 1       # PUSH_QUOTA_KEEP — newest backups per database that are never pruned
+    push_delete_local: bool = True # PUSH_DELETE_LOCAL — delete local files after a successful push (false = keep them)
+    push_latest: int = 3           # PUSH_LATEST — newest backups per database to upload (0 = all)
+    push_remote: str = ""          # PUSH_REMOTE — configured rclone remote (e.g. akilimo-bkp:/in); beats REMOTE
+    pull_delete_remote: bool = False  # PULL_DELETE_REMOTE — delete server files after they are safely pulled
+    pull_keep_remote: int = 0      # PULL_KEEP_REMOTE — newest backups per database to leave on the server
+    pull_exclude: str = ""         # PULL_EXCLUDE — globs of files pull never downloads, separated by |
+    pull_remote: str = ""          # PULL_REMOTE — configured rclone remote to pull from (e.g. akilimo-bkp:)
+    manifest: bool = True          # MANIFEST — keep manifest.json (an index of all backups) up to date
     # Encryption at rest (age by default, gpg supported)
     encrypt: bool = False
     encrypt_tool: str = "age"
@@ -141,12 +154,40 @@ def _load_incremental(cfg: Config, get) -> None:
 def _load_ops(cfg: Config, get) -> None:
     """Parse RETENTION / lifecycle hooks / SIZE_WARN_RATIO from any lookup callable."""
     cfg.retention = get("RETENTION", "").strip()
+    cfg.manifest = get("MANIFEST", "true").strip().lower() not in ("false", "0", "no", "off")
     cfg.hook_pre_backup = get("PRE_BACKUP_HOOK", "").strip()
     cfg.hook_post_backup = get("POST_BACKUP_HOOK", "").strip()
     try:
         cfg.size_warn_ratio = max(0.0, float(get("SIZE_WARN_RATIO", "0.5")))
     except ValueError:
         cfg.size_warn_ratio = 0.5
+
+
+def _load_pull(cfg: Config, get) -> None:
+    """Parse RCLONE_CMD / PULL_REMOTE / PUSH_REMOTE from any lookup callable."""
+    cfg.rclone_cmd = get("RCLONE_CMD", "rclone").strip() or "rclone"
+    cfg.pull_remote = get("PULL_REMOTE", "").strip()
+    cfg.pull_exclude = get("PULL_EXCLUDE", "").strip()
+    cfg.pull_delete_remote = get("PULL_DELETE_REMOTE", "false").strip().lower() in ("true", "1", "yes", "on")
+    try:
+        cfg.pull_keep_remote = max(0, int(get("PULL_KEEP_REMOTE", "0")))
+    except ValueError:
+        cfg.pull_keep_remote = 0
+    cfg.push_remote = get("PUSH_REMOTE", "").strip()
+    cfg.push_delete_local = get("PUSH_DELETE_LOCAL", "true").strip().lower() not in ("false", "0", "no", "off")
+    cfg.push_quota = get("PUSH_QUOTA", "").strip()
+    try:
+        cfg.push_quota_target = min(100, max(1, int(get("PUSH_QUOTA_TARGET", "90"))))
+    except ValueError:
+        cfg.push_quota_target = 90
+    try:
+        cfg.push_quota_keep = max(0, int(get("PUSH_QUOTA_KEEP", "1")))
+    except ValueError:
+        cfg.push_quota_keep = 1
+    try:
+        cfg.push_latest = max(0, int(get("PUSH_LATEST", "3")))
+    except ValueError:
+        cfg.push_latest = 3
 
 
 def _load_encryption(cfg: Config, get) -> None:
@@ -343,6 +384,7 @@ def load_config(config_file: Path | None = None, db_type_override: str | None = 
 
     _load_incremental(cfg, _get)
     _load_ops(cfg, _get)
+    _load_pull(cfg, _get)
     _load_encryption(cfg, _get)
     _load_remote(cfg, _get)
     _load_s3(cfg, _get)
@@ -354,6 +396,9 @@ def load_config(config_file: Path | None = None, db_type_override: str | None = 
     raw_skip = _get("SKIP_SERVICES", "").strip()
     cfg.skip_services = [s.strip() for s in raw_skip.split() if s.strip()] if raw_skip else []
 
+    from .storage import use_rclone  # lazy: storage imports this module
+
+    use_rclone(cfg.rclone_cmd)
     return cfg
 
 
@@ -391,6 +436,7 @@ def _load_prefixed_config(
         cfg.days_to_keep = 7
     _load_incremental(cfg, _get)
     _load_ops(cfg, _get)
+    _load_pull(cfg, _get)
     _load_encryption(cfg, _get)
     _load_remote(cfg, _get)
     _load_s3(cfg, _get)

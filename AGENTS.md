@@ -26,6 +26,7 @@ No mypy/format tooling — ruff only. CI (`.github/workflows/pr-checks.yml`) run
 - `migrate/` is a self-contained MariaDB→PostgreSQL pipeline (types → transform → schema → data → validate → report); `__init__.py::run_migrate()` is the public entry.
 - `verify.py` / `doctor.py` / `crypto.py` / `storage.py` / `notify.py` / `output.py` are cross-cutting: verify + doctor gate automation, crypto does encryption at rest, storage does off-site sync, notify owns the exit-code contract, output owns `--json`.
 - `--json` works because every module console is built as `register(Console())` (`output.py`), which lets `enable_json()` null them all. A module that prints outside its JSON payload must write to **stderr** or it corrupts stdout parsing — and a fatal error must go through `output.error()` / `cli._fail()`, since a nulled console silently swallows anything printed through it. Commands with a selection wizard must require the target explicitly under `--json` (no one can answer the prompt).
+- `manifest.py` keeps `BASE_DIR/manifest.json`, a global index of all backups (path/size/mtime + fingerprint). Anything that changes the tree (backup, cleanup, push cleanup, quota prune, pull `--delete-remote`) must refresh it; `pull` reads it instead of listing remote folders and falls back to listing when it is missing, invalid or stale.
 - Off-site sync shells out to the `rclone` **binary** (`storage.py`), not the `rclone-python` package — that distribution installs its module as `rclone_python`, and its API builds shell strings.
 
 ## Hard rules
@@ -38,6 +39,8 @@ No mypy/format tooling — ruff only. CI (`.github/workflows/pr-checks.yml`) run
 
 - Three-layer merge: defaults → file → env vars (env wins).
 - **Auto-discovery order changed recently** (`config.py::_find_config_file`): user config dir first — Windows `%APPDATA%\fuelrod-backup`, else `$XDG_CONFIG_HOME/fuelrod-backup` → `~/.config/fuelrod-backup` — then `~`, cwd, package dir, repo root. Each dir checked for `.backup`, `.env`, `.env-backup`. `init` writes to `user_config_dir()` by default.
+- Every config key read in `config.py` must have an entry in `settings.SETTINGS` (type, default, group, help) so `init` can set it, and be documented in `.backup.example`; `tests/test_settings_wizard.py` fails otherwise.
+- Config writers merge, never rewrite: `cli._write_config` / `_update_config_keys` update only the keys a wizard manages and keep all other lines (a `.bak` copy is made). New config keys need no wizard change to survive `init`.
 - Single-engine mode uses engine-agnostic `DB_*` keys only. The `PG_*` / `MY_*` / `MS_*` prefixed keys apply **only** to multi-engine mode (`--all-engines`, `load_all_configs()`). Legacy `PG_USERNAME` etc. are ignored in single-engine mode.
 - The repo has a real `.backup` at the root (gitignored) that the CLI will auto-discover during local runs — it can affect manual smoke tests.
 - Tests use the `clean_env` / `no_config_console` fixtures in `tests/conftest.py`; new config tests must use `clean_env` so the developer's own env vars don't leak into assertions.

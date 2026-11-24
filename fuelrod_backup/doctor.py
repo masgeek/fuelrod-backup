@@ -17,6 +17,7 @@ from .config import Config
 from .fileutil import human_size
 from .notify import EXIT_FAILURE, EXIT_OK, notify
 from .output import emit, json_enabled, register
+from .storage import rclone_bin
 
 console = register(Console())
 
@@ -290,7 +291,7 @@ def check_encryption(cfg: Config, report: Report) -> None:
 
 
 def check_rclone(cfg: Config, report: Report) -> None:
-    if not shutil.which("rclone"):
+    if not shutil.which(rclone_bin()):
         report.add(
             "rclone (off-site)", "skip", "not installed",
             "Only needed for sync — install from https://rclone.org/install/",
@@ -299,7 +300,7 @@ def check_rclone(cfg: Config, report: Report) -> None:
 
     try:
         remotes = subprocess.run(
-            ["rclone", "listremotes"], capture_output=True, timeout=15, check=False
+            [rclone_bin(), "listremotes"], capture_output=True, timeout=15, check=False
         )
         names = {
             line.split(":", 1)[0]

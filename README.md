@@ -8,13 +8,17 @@ Interactive backup and restore CLI for PostgreSQL, MariaDB/MySQL, and Microsoft 
 - Interactive backup and restore wizards with progress bars
 - Non-interactive backup and restore modes for automation
 - Docker and direct-host connection modes
-- Config bootstrap wizard (`init`) and connection check (`test`)
-- Backup retention cleanup (`KEEP_DAYS`)
+- Config bootstrap wizard (`init`, every setting reachable; `init --list`) and connection check (`test`)
+- Backup retention cleanup (`KEEP_DAYS`, or GFS profiles with `RETENTION=daily=7,weekly=4,monthly=12`)
+- Run locks so a backup and a restore of the same engine never overlap; pre/post backup hooks; a warning when a dump
+  is suddenly much smaller than the last one
 - Interactive database/schema drop, plus disconnect-without-drop (`drop`)
 - Backup integrity verification (`verify`)
-- Pre-flight diagnostics (`doctor`)
+- Pre-flight diagnostics (`doctor`), restore drills (`verify --restore-test`) and backup listing (`list`)
+- Remote quota monitoring and pruning (`quota`), a global `manifest.json` index, and scheduling of
+  backup / pull / push / quota jobs (`schedule`)
 - n8n Docker volume snapshots with no container downtime
-- Off-site sync to Google Drive, S3, B2, SFTP or any rclone remote (`sync`)
+- Off-site sync to Google Drive, S3, B2, SFTP or any rclone remote (`sync`), and parallel download back to local storage (`pull`)
 - MariaDB → PostgreSQL migration with schema transformation, data migration, and post-migration validation (`migrate`)
 
 ## Installation
@@ -68,17 +72,25 @@ fuelrod-backup restore
 
 ```text
 fuelrod-backup init       [OPTIONS]
+fuelrod-backup list       [OPTIONS]
 fuelrod-backup test       [OPTIONS]
 fuelrod-backup backup     [OPTIONS]
 fuelrod-backup restore    [OPTIONS]
 fuelrod-backup drop       [OPTIONS]
+fuelrod-backup create     [OPTIONS]
 fuelrod-backup verify    [OPTIONS]
-fuelrod-backup doctor    [OPTIONS]
+fuelrod-backup doctor     [OPTIONS]
 fuelrod-backup migrate    [OPTIONS]
 fuelrod-backup n8n-backup  [OPTIONS]
 fuelrod-backup n8n-restore [OPTIONS]
 fuelrod-backup sync        [OPTIONS]
-fuelrod-backup sync [OPTIONS]  Upload backups to an off-site remote via rclone (S3, B2, etc.)
+fuelrod-backup sync-init   [OPTIONS]
+fuelrod-backup pull        [OPTIONS]
+fuelrod-backup pull-init   [OPTIONS]
+fuelrod-backup push        [OPTIONS]   (alias of sync)
+fuelrod-backup push-init   [OPTIONS]
+fuelrod-backup quota       [OPTIONS]
+fuelrod-backup schedule    [OPTIONS]
 ```
 
 The short alias `fr-bkp` is equivalent to `fuelrod-backup` for all commands.
@@ -87,11 +99,29 @@ The short alias `fr-bkp` is equivalent to `fuelrod-backup` for all commands.
 
 Wizard to generate a `.backup` config file.
 
+Re-running it on an existing file is safe: the wizard only updates the keys it asks about (in place) and keeps every
+other line — `RETENTION`, `NOTIFY_*`, `ENCRYPT_*`, `PULL_*` / `PUSH_*`, hooks, your comments. The previous file is saved
+as `.backup.bak`. The one exception is deselecting an engine in multi-engine mode, which removes that engine's
+connection keys. `sync-init`, `pull-init` and `push-init` merge the same way.
+
 - `--output, -o PATH` — output path (default: `.backup`)
+- `--list, -l` — list **every** setting with its current value, default, description and the command that sets it
+  (`--json` for machines). Passwords are never shown
+- `--section, -s NAME` — repeatable (or `all`): configure only that group and skip the connection wizard. Groups:
+  `storage` (retention, manifest), `backup` (incremental, size warning, hooks), `encryption`, `notifications`, `push`,
+  `quota`, `pull`, `rclone`, `n8n`
+- `--advanced` — skip the connection wizard and pick the groups to review from a list
+
+The main wizard ends by offering the pull/push remotes and the advanced settings, so every key of `.backup.example` can be
+set from `init` (`pull-init`, `push-init` and `sync-init` cover the remotes). Settings that only matter when another one is
+on (for example `ENCRYPT_*` when `ENCRYPT=false`) are skipped; answers are validated; values equal to the default are not
+written; clearing an answer removes the key; everything else in the file is left alone.
 
 ### `test`
 
-Validate connection and print the resolved config.
+Validate the connection and print the resolved config, **for every configured engine** (`PG_*` / `MY_*` / `MS_*`
+keys, or just `DB_TYPE`). Use `--db-type` to test one. Exits 1 if any connection fails; with `--json` and several
+engines the output is `{"engines": [...]}`.
 
 - `--docker / --no-docker`
 - `--db-type, -t` — `postgres | mariadb | mssql`
@@ -107,22 +137,45 @@ Interactive or non-interactive backup with optional retention cleanup.
 - `--keep-days, -k INT` — override `KEEP_DAYS` (`0` keeps forever)
 - `--db, -d TEXT` — repeatable; restrict to specific database(s)
 - `--docker / --no-docker`
-- `--db-type, -t`
+- `--db-type, -t` — engine; asked interactively when several are available and none is given
+- `--config, -c PATH`
+
+A backup takes a per-engine lock (`BASE_DIR/.fuelrod-<engine>.lock`), so it never overlaps a restore or another
+backup of the same engine; a stale lock is reclaimed. Around the dumps:
+
+- `PRE_BACKUP_HOOK` / `POST_BACKUP_HOOK` — a command run before (non-zero exit aborts the backup) and after (failure
+  only warns) the run; the engine and folder are passed as `FUELROD_*` environment variables
+- `RETENTION=daily=7,weekly=4,monthly=12` — keep the newest backup of each of the last N days/weeks/months/years per
+  database (overrides `KEEP_DAYS`)
+- `SIZE_WARN_RATIO=0.5` — warn when a dump is smaller than this fraction of the previous one (possible silent failure)
+- `BASE_DIR/manifest.json` is rewritten after the run (see **Manifest**)
+
+### `list`
+
+List the backups under `BASE_DIR` per engine and database with size, age and flags (encrypted, gzip, incremental).
+
+- `--engine, -e TEXT` / `--db, -d TEXT` — restrict to one engine / database folder
+- `--json` — machine-readable output
 - `--config, -c PATH`
 
 ### `restore`
 
 Interactive restore wizard with engine-specific options. PostgreSQL includes TOC analysis for schema, table, and role filtering.
 
-The wizard navigates the backup directory in four steps:
+The wizard navigates the backup directory in these steps:
 
-1. **Project directory** — pick a top-level folder under `BASE_DIR` (e.g. `akilimo`, `fuelrod`)
-2. **Engine directory** — auto-resolved from `DB_TYPE` (e.g. `postgres`, `mariadb`) — no prompt
+1. **Engine** — asked when several are available (`--db-type` skips it)
+2. **Project directory** — only when backups sit under a project folder; if `BASE_DIR/<engine>` exists (what
+   `backup` writes) it is used directly
 3. **Database** — pick the database folder within the engine directory
 4. **Backup file** — pick from files in that database folder only
 
+Before overwriting an existing database the restore shows what will be replaced (tables, size) and refuses to run
+over active connections unless you confirm (interactive) or pass `--force`. A per-engine lock keeps it from
+overlapping a backup.
+
 - `--no-interactive, -n` — skip the wizard; requires `--db` (and `--project` only if backups sit under a project folder)
-- `--project, -p TEXT` — project/group folder under `BASE_DIR`
+- `--project, -p TEXT` — project/group folder under `BASE_DIR` (only for a project-folder layout)
 - `--db, -d TEXT` — repeatable; database(s) to restore
 - `--file, -f TEXT` — backup file name inside the database folder (default: latest by mtime)
 - `--target-db TEXT` — restore into a different database name
@@ -132,6 +185,8 @@ The wizard navigates the backup directory in four steps:
 - `--no-owner` — restore with `--no-owner --no-privileges`
 - `--dry-run` — print the plan and exit without changing anything
 - `--incremental-chain` — after restoring the chosen base, apply every newer `_inc` dump in order
+- `--force` — restore even if the target database has active connections
+- `--safety-dump` — dump the existing target database before overwriting it
 - `--yes, -y` — required to actually execute a non-interactive restore
 - `--all-engines, -a` — restore all engines sequentially (multi-engine config)
 - `--docker / --no-docker`
@@ -150,9 +205,11 @@ fuelrod-backup restore -n -p fuelrod -d app --target-db app_restored --yes
 
 ### `doctor`
 
-Run pre-flight checks and report everything that is not ready yet.
+Run pre-flight checks and report everything that is not ready yet, for every configured engine (`--db-type`
+limits it to one).
 
 - `--skip-connection` — skip the live database connection test
+- `--db-type, -t` — check only this engine
 - `--config, -c PATH`
 
 Checks the Python runtime, config file discovery, credentials, `BASE_DIR` existence/writability and
@@ -172,6 +229,9 @@ so it can gate a cron job or a restore drill.
 - `--checksum, -k` — also compute a SHA-256 for each artifact
 - `--deep` — fully decompress and CRC-check every archive (slow on large trees)
 - `--parallel, -j INT` — concurrent workers (default: `min(8, CPU count)`)
+- `--restore-test` — **restore drill**: restore the newest full backup of each database into a throwaway database,
+  check it has tables, then drop it (exit 3 if a drill fails)
+- `--db-type, -t` — engine for `--restore-test`
 - `--json` — emit a machine-readable JSON document
 - `--config, -c PATH`
 
@@ -231,6 +291,23 @@ Use `--disconnect-only` to terminate connections **without** dropping anything.
 - `--db-type, -t`
 - `--config, -c PATH`
 
+### `create`
+
+Interactively create a database, or a new schema inside an existing PostgreSQL database. The name is confirmed
+before anything is created.
+
+- `--docker / --no-docker`
+- `--db-type, -t` — engine; asked when several are available
+- `--config, -c PATH`
+
+### `sync-init`
+
+Configure the off-site `sync`/`push` remote without running the full `init` wizard: a guided S3 setup (writes the
+rclone remote and the `S3_*` keys) or a generic rclone remote spec (`REMOTE`). `pull-init` and `push-init` choose
+the rclone remotes / folders used by `pull` and `push`. All three merge into the existing config file.
+
+- `--output, -o PATH` — config file to update
+
 ### `migrate`
 
 Migrate a MariaDB database to PostgreSQL. Extracts schema from `information_schema`, transforms DDL, migrates data in batches, and validates row counts.
@@ -271,17 +348,139 @@ Restore an n8n volume from a `.tar.gz` archive.
 - `--verbose, -v` — print detailed step logs
 - `--config, -c PATH`
 
+### `quota`
+
+Show how much of a remote quota your backups use, and optionally prune the oldest ones. Usage is the total
+size of the files under the remote path, compared with a limit you set (`PUSH_QUOTA=50G`); if the provider
+reports its own total/used/free (`rclone about`), that is shown too.
+
+- `--remote, -r TEXT` — destination to measure: an rclone remote or a local folder; repeatable (default `PUSH_REMOTE`, then
+  `REMOTE` / `S3_*`). Each destination is checked against the quota separately
+- `--quota, -q SIZE` — limit such as `500M`, `50G`, `1T` (default: `PUSH_QUOTA`)
+- `--prune` — delete the oldest backups until usage is at `--target` percent of the quota (default 90, or
+  `PUSH_QUOTA_TARGET`). A backup's dump and manifest are deleted together
+- `--keep INT` — newest backups of each database that are never deleted (default 1, or `PUSH_QUOTA_KEEP`);
+  if the quota is too small to fit them, pruning stops and the command reports it instead
+- `--dry-run, -n` — with `--prune`, show what would be deleted
+- `--json` — machine-readable output
+- exits 1 while the remote is over quota (and sends the usual failure notification), so cron or a monitor can alert on it
+
+With `PUSH_QUOTA` set, `sync` / `push` enforces the same limit on every destination after the upload (`sync --quota 50G`
+overrides it).
+
+```bash
+fuelrod-backup quota -r akilimo-bkp:db-backup -q 50G            # report
+fuelrod-backup quota -r akilimo-bkp:db-backup -q 50G --prune -n # preview the prune
+fuelrod-backup push -q 50G                                      # upload, then prune to fit
+```
+
+### `schedule`
+
+Schedule runs of `backup`, `pull`, `push`, `quota`, `verify` or `doctor` with cron (Linux/macOS) or Windows Task
+Scheduler. Each job has its own entry, so a backup, a push and a pull can all be installed and are replaced
+independently. Without `--apply` it only prints the crontab line / `schtasks` command.
+
+- `--job, -j NAME` — `backup` (default), `pull`, `push`, `quota`, `verify`, `doctor`
+- `--cron EXPR` — five-field cron expression. Defaults per job: backup `0 2 * * *`, pull `30 3 * * *`, push `0 4 * * *`,
+  quota `0 5 * * *`, verify `30 5 * * *`, doctor `0 6 * * 1`. On Windows daily, every-N-hours (`0 */6 * * *`) and weekly
+  (`30 3 * * 1,5`) schedules are supported
+- `--arg, -a TEXT` — repeatable; extra options for the job, e.g. `--arg "--latest 5"` or
+  `--arg "--delete-remote --yes"` (a scheduled pull that deletes on the server needs `--yes`, so it is never implied)
+- `--log PATH` — where the job appends its output (default: `logs/fuelrod-backup-<job>.log` in your config folder)
+- `--apply` — install it; `--list` shows the installed jobs; `--remove` deletes the one named by `--job`
+- `--db-type`, `--config, -c` — passed through to jobs that accept them. The installed command always uses
+  `--no-interactive --json`, and the absolute path of `fuelrod-backup` and of the config file
+
+```bash
+fuelrod-backup schedule --job backup --cron "0 2 * * *" --apply
+fuelrod-backup schedule --job pull   --cron "30 3 * * *" --apply
+fuelrod-backup schedule --job push   --cron "0 4 * * *" --arg "--latest 3" --apply
+fuelrod-backup schedule --list
+```
+
+Order matters if they share data: pull the server's backups first, push to the off-site destinations afterwards.
+
+### `pull`
+
+Download backups from an rclone remote into local storage, in parallel. It expects the layout `sync`
+uploads, `<remote>/<engine>/<database>/<files>`, and runs one rclone job per engine/database folder,
+with `--parallel` jobs at a time. It never deletes anything locally. A file is downloaded only if it is neither in the
+local folder (same size) nor in the **pull history** — a small record of what was already pulled, kept in your config
+folder (`pull-history.json`). So if `push` (or you) removes the local copy, the next `pull` does not download it again.
+
+- `--remote, -r TEXT` — source rclone remote, e.g. `akilimo-bkp:db-backup`. Point it at the folder that
+  contains the `<engine>/` folders: only `postgres`, `mariadb` and `mssql` folders are pulled, and `pull`
+  refuses to run on a directory that has none (use `--engine NAME` to override).
+- `PULL_REMOTE` (config) — the remote to pull from by default, so a plain `pull` works (cron-friendly). Order:
+  `--remote`, then `PULL_REMOTE`, then `REMOTE` / `S3_*`. `PUSH_REMOTE` is the same for `sync` / `push`.
+- `pull-init` / `push-init` — pick one of your configured rclone remotes (`rclone listremotes`), enter the path
+  inside it, and optionally test the connection. They write `PULL_REMOTE` / `PUSH_REMOTE` to your config file,
+  and `init` offers to run them at the end.
+- `--rclone PATH` / `RCLONE_CMD` (config) — rclone executable to use when it is not on `PATH`, e.g. `D:/tools/rclone.exe`.
+- `--dest PATH` — local destination (default: `BASE_DIR`)
+- `--engine, -e` / `--db, -d` — repeatable; only pull these engine / database folders
+- `--include, -i GLOB` — repeatable; rclone glob to include, e.g. `*.dump.gz`
+- `--exclude, -x GLOB` — repeatable; files that are never downloaded. A glob may match the file name (`*_inc.*`,
+  `manifest_*.txt`), its path in the database folder, or the full `engine/database/file` path (`postgres/sonar/*` skips a
+  whole database). `PULL_EXCLUDE` in config holds a default list, separated by `|`. Excluded files are also never deleted
+  on the server by `--delete-remote`
+- `--since INT` — only files modified in the last N days
+- `--parallel, -j INT` — folder jobs at the same time (default 4)
+- `--transfers INT` / `--checkers INT` — parallelism inside each job (default 4 / 8)
+- `--bwlimit TEXT` — bandwidth limit per job, e.g. `10M`
+- `--overwrite` — download everything again, replacing local files (ignores the history)
+- `--no-manifest` — do not read `manifest.json` from the server; list its folders instead (see **Manifest** below)
+- `--ignore-history` — also fetch files that were pulled before but are no longer in the local folder
+- `--delete-remote` / `--no-delete-remote` — after pulling, **delete the files on the server** that are verified to be in
+  the local folder with the same size (default `PULL_DELETE_REMOTE`, false). Never touches a file whose download failed
+  or that is missing locally, and keeps the database folders themselves. Needs `--yes` (or a prompt in a terminal);
+  `--dry-run` previews it
+- `--keep-remote N` — with `--delete-remote`, leave the newest N backups of each database on the server (default
+  `PULL_KEEP_REMOTE`, 0)
+- `--verify` — with `--delete-remote`, also compare checksums (`rclone check`) before deleting
+- `--yes, -y` — confirm deleting server files without asking
+- `--verbose, -v` — show every rclone command (credentials masked) and its log live: each file copied, skipped or
+  deleted, plus transfer stats every 5 s. `-vv` adds rclone's debug output and, for `pull`, the per-file decision
+  (downloaded / already local / pulled before). In `--json` mode the extra output goes to stderr
+- `--dry-run, -n` — show what would be downloaded
+- `--json` — machine-readable output; exits 1 if any job fails
+
+```bash
+fuelrod-backup pull -r s3:acme-backups/prod -j 6
+fuelrod-backup pull -r s3:acme-backups/prod -e postgres -d billing --since 7
+fuelrod-backup pull -r akilimo-bkp:db-backup --dest D:/db-backup -j 6
+```
+
 ### `sync`
 
 Upload backup files to any rclone remote, with optional age-based remote pruning. Local files are
 deleted only after a successful upload.
 
-- `--remote, -r TEXT` — target remote, e.g. `s3:my-bucket/backups`, `b2:bucket`, `sftp:host:/srv/backups`
+- `--remote, -r TEXT` — destination: an rclone remote (`s3:my-bucket/backups`, `b2:bucket`, `sftp:host:/srv/backups`)
+  **or a local folder** (`D:/OneDrive/Backups`, a network share, a USB drive). Repeat it to push to several
+  destinations at once; `PUSH_REMOTE` holds the default list, separated by `|`:
+  `PUSH_REMOTE=akilimo-bkp:backups|D:/OneDrive/Backups`. Every destination receives the same files, local files are
+  deleted only after all uploads succeeded, and one failing destination does not stop the others (exit code 1).
+  With several destinations the interactive date/schema selection is skipped. A local destination must be outside
+  the backup folder
 - `--list-remotes` — list the rclone remotes configured on this host and exit
 - `--dry-run, -d` — show plan without uploading
-- `--days, -n INT` — prune remote files older than N days
+- `--days, -n INT` — prune remote files older than N days. Off by default; the old default of 2 days deleted
+  freshly uploaded backups that were older than that, so it now only runs when you ask for it (or use a quota)
 - `--include, -i GLOB` — repeatable; glob pattern to include
-- `--keep-local` — skip local file deletion after upload
+- `--keep-local` / `--delete-local` — keep or delete the local files after a successful upload (default: `PUSH_DELETE_LOCAL`,
+  which is `true`). If you also `pull` into the same folder, keep them: deleted files are downloaded again by the next `pull`
+  After deleting local files, folders that became empty are removed too (the backup folder itself stays)
+- `--latest, -L INT` — upload only the newest N backups of each database, with their manifests (and the full base of
+  any selected incremental dump). Default `PUSH_LATEST=3`; `0` uploads every file. Only the uploaded files are
+  deleted locally.
+- `PUSH_REMOTE` (config) — destination(s) to upload to by default, `|`-separated. `push` is an alias of `sync`, and
+  `push-init` sets it interactively: pick rclone remotes or a local folder (for example your OneDrive folder), and
+  add as many as you like (`init` offers it too).
+- `--rclone PATH` — rclone executable to use
+- `--verbose, -v` — show every rclone command (credentials masked) and its log live: each file copied, skipped or
+  deleted, plus transfer stats every 5 s. `-vv` adds rclone's debug output and, for `pull`, the per-file decision
+  (downloaded / already local / pulled before). In `--json` mode the extra output goes to stderr
 - `--json` — machine-readable output
 - `--config, -c PATH`
 
@@ -300,6 +499,23 @@ Upload backups to any rclone remote and prune old files there.
 Works with every backend rclone supports: Google Drive, S3, S3-compatible
 (MinIO, Wasabi), Backblaze B2, SFTP, Azure Blob, WebDAV. Local files are
 deleted only after a successful upload.
+
+## Manifest
+
+A **global index of every backup** is kept at the root of the backup folder: `BASE_DIR/manifest.json`. It lists every
+file of every engine (`path`, `size`, `mtime`) and a `fingerprint` of that list. Without it, anything that needs to know
+"what is there?" has to walk the folders — on a remote (SFTP, S3, Drive) that is one request per folder, even when nothing
+changed.
+
+- `backup` rewrites it after each run (also after the retention cleanup), `push` rewrites it after deleting local files
+  and **publishes a fresh copy on every destination** after uploading and pruning, and `quota --prune` and
+  `pull --delete-remote` refresh the one they changed.
+- `pull` reads that one file with a single request. It builds its jobs and file lists from it **without listing any
+  folder**, and if the fingerprint is the same as at the end of the last complete, unfiltered pull it stops right there:
+  `NOTHING NEW — no folders were listed`.
+- A stale or damaged manifest is never trusted blindly: it must parse and match its own fingerprint, a failed download
+  makes `pull` list that folder for real and retry, and `pull --no-manifest` always lists.
+- Set `MANIFEST=false` to stop writing it. Hidden files (locks, incremental state) and the manifest itself are not listed.
 
 ## Notifications
 
@@ -382,26 +598,23 @@ DB_PORT=
 
 ### Optional keys
 
+Every key — with its default, description and the command that sets it — is in the generated table in
+[docs/CONFIGURATION.md](docs/CONFIGURATION.md#settings-reference); `fuelrod-backup init --list` prints it with your
+current values. The most used ones:
+
 | Key | Description |
 |-----|-------------|
-| `USE_DOCKER` | `true`/`false` — connect via Docker exec |
-| `SERVICE` | container name (Docker mode) |
+| `USE_DOCKER` / `SERVICE` | connect via Docker exec / container name |
 | `BASE_DIR` | backup root directory |
 | `COMPRESS_FILE` | `true`/`false` — gzip output |
-| `INCREMENTAL` | `true`/`false` — dump only changed tables (PostgreSQL only) |
-| `INCREMENTAL_KEEP` | number of `_inc` dumps to keep alongside the base (default 5) |
-| `ENCRYPT` | `true`/`false` — encrypt artifacts after compression |
-| `ENCRYPT_TOOL` | `age` (default) or `gpg` |
-| `ENCRYPT_RECIPIENT` | age public key (`age1…`) or gpg recipient key |
-| `ENCRYPT_IDENTITY_FILE` | age private key file, needed to restore encrypted backups |
-| `ENCRYPT_PASSPHRASE_FILE` | passphrase file for symmetric gpg (never pass a passphrase on the CLI) |
-| `NOTIFY_ON` | `success` / `failure` / `all` — which events notify |
-| `NOTIFY_URL` | webhook endpoint receiving a JSON POST |
-| `NOTIFY_HOOK_SUCCESS` | command run on success, e.g. `/bin/notify {status} {command}` |
-| `NOTIFY_HOOK_FAILURE` | command run on failure |
-| `NOTIFY_TIMEOUT` | webhook/hook timeout in seconds (default 15) |
-| `S3_PROVIDER` | rclone `--s3-provider` (Minio, Wasabi, ...) for `s3:` remotes |
-| `KEEP_DAYS` | retention days (`0` = keep forever) |
+| `KEEP_DAYS` / `RETENTION` | retention days, or a GFS profile (`daily=7,weekly=4,monthly=12`) |
+| `INCREMENTAL`, `INCREMENTAL_KEEP` | dump only changed tables (PostgreSQL only) and how many `_inc` dumps to keep |
+| `ENCRYPT`, `ENCRYPT_TOOL`, `ENCRYPT_RECIPIENT`, `ENCRYPT_IDENTITY_FILE`, `ENCRYPT_PASSPHRASE_FILE` | encryption at rest (age / gpg) |
+| `NOTIFY_ON`, `NOTIFY_URL`, `NOTIFY_HOOK_SUCCESS`, `NOTIFY_HOOK_FAILURE`, `NOTIFY_TIMEOUT` | notifications |
+| `PRE_BACKUP_HOOK`, `POST_BACKUP_HOOK`, `SIZE_WARN_RATIO`, `MANIFEST` | backup hooks, size-drop warning, manifest |
+| `PUSH_REMOTE`, `PUSH_LATEST`, `PUSH_DELETE_LOCAL`, `PUSH_QUOTA*` | push destinations, how many backups to upload, local cleanup, quota |
+| `PULL_REMOTE`, `PULL_EXCLUDE`, `PULL_DELETE_REMOTE`, `PULL_KEEP_REMOTE` | pull source, ignored files, deleting on the server |
+| `RCLONE_CMD` | rclone executable when it is not on `PATH` |
 | `CONNECTION_TIMEOUT` | connection timeout in seconds |
 
 ### Engine-specific keys
@@ -447,7 +660,8 @@ Backups are written under a project folder, then engine type, then database name
 
 The `<project>` folder is determined by how `BASE_DIR` is set per project. Set `BASE_DIR` to the root that contains all project folders and the restore wizard will let you navigate from there.
 
-The restore wizard searches from `BASE_DIR`, not `BASE_DIR/<engine>`, so the directory does not need to exist at that path.
+`backup` writes `BASE_DIR/<engine>/<database>/…` (the project level is optional), and `BASE_DIR/manifest.json` indexes everything.
+`restore` uses `BASE_DIR/<engine>` directly when it exists and otherwise lets you pick a project folder.
 
 ## Notes
 
@@ -459,6 +673,21 @@ The restore wizard searches from `BASE_DIR`, not `BASE_DIR/<engine>`, so the dir
 ## License
 
 GNU General Public License v3.0 or later. See [LICENSE](LICENSE).
+
+## Upgrade notes
+
+Behaviour that changed for existing setups:
+
+- **`push` / `sync` uploads only the newest 3 backups per database** (`PUSH_LATEST=3`). For the old
+  upload-everything behaviour use `--latest 0` or `PUSH_LATEST=0`.
+- **`push` / `sync` no longer prunes remote files older than 2 days.** That default deleted freshly uploaded backups
+  that were older than that. Age pruning now needs `--days N`; bound the remote with a quota (`PUSH_QUOTA`) instead.
+- **`BASE_DIR` now contains `manifest.json`** (set `MANIFEST=false` to stop writing it); scripts that scan the folder
+  will see it. It is never uploaded as a backup file.
+- **`init` keeps the keys it does not ask about** instead of rewriting the file, and saves `.backup.bak` first.
+- **`test` and `doctor` run for every configured engine**, and with `--json` and several engines they emit
+  `{"engines": [...]}`. `quota` exits 1 while a destination is over quota.
+- `--remote` of `sync` / `push` is repeatable and accepts local folders (`D:/OneDrive/Backups`).
 
 ## Breaking Change
 

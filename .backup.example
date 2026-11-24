@@ -87,5 +87,66 @@ MSSQL_BACKUP_DIR=/var/opt/mssql/backups
 # Lifecycle hooks: PRE_BACKUP_HOOK aborts the backup on non-zero exit; POST_BACKUP_HOOK only warns
 # PRE_BACKUP_HOOK=
 # POST_BACKUP_HOOK=
+# Keep BASE_DIR/manifest.json (a global index of all backups, read by pull instead of listing folders)
+# MANIFEST=true
 # Warn when a dump is smaller than this fraction of the previous one (0 = off)
 # SIZE_WARN_RATIO=0.5
+
+# ── Pull / push: rclone remotes you already configured (rclone config) ──
+# `fuelrod-backup pull` downloads from PULL_REMOTE; `push` / `sync` uploads to PUSH_REMOTE
+# Point PULL_REMOTE at the folder that holds the postgres/ mariadb/ mssql/ folders
+# PULL_REMOTE=akilimo-bkp:db-backup
+# Files pull never downloads (globs, separated by |); matches the name, the path or engine/database/file
+# PULL_EXCLUDE=*_inc.*|manifest_*.txt|postgres/sonar/*
+# Delete the files on the server after they are verified in the local folder (pull --delete-remote needs --yes)
+# PULL_DELETE_REMOTE=false
+# PULL_KEEP_REMOTE=1     # newest backups per database to leave on the server
+# PUSH_REMOTE=offsite:incoming
+# Several destinations, separated by |  (rclone remotes and/or local folders such as a OneDrive folder):
+# PUSH_REMOTE=akilimo-bkp:backups|D:/OneDrive/Backups
+# Newest backups per database that push/sync uploads (0 = all files)
+# PUSH_LATEST=3
+# Delete local files after a successful push? Set false if you also pull into this folder
+# PUSH_DELETE_LOCAL=true
+# Remote size limit: push/sync prunes the oldest remote backups to fit it; `fuelrod-backup quota` reports usage
+# PUSH_QUOTA=50G
+# PUSH_QUOTA_TARGET=90   # prune down to this percent of the quota
+# PUSH_QUOTA_KEEP=1      # newest backups per database that are never pruned
+
+# rclone executable when it is not on PATH
+# RCLONE_CMD=D:/tools/rclone.exe
+
+# ── Incremental backups (PostgreSQL) ────────────────────────
+# INCREMENTAL=false
+# INCREMENTAL_KEEP=5
+
+# ── Encryption at rest ──────────────────────────────────────
+# ENCRYPT=false
+# ENCRYPT_TOOL=age                 # age | gpg
+# ENCRYPT_RECIPIENT=
+# ENCRYPT_IDENTITY_FILE=           # private key used to decrypt (age identity)
+# ENCRYPT_PASSPHRASE_FILE=         # passphrase file (gpg symmetric)
+
+# ── Notifications ───────────────────────────────────────────
+# NOTIFY_ON=failure                # success | failure | all
+# NOTIFY_URL=https://hooks.example.com/fuelrod
+# NOTIFY_TIMEOUT=15
+# NOTIFY_HOOK_SUCCESS=
+# NOTIFY_HOOK_FAILURE=
+
+# ── Off-site sync: S3 and generic remote (set with `fuelrod-backup sync-init`) ──
+# S3_REMOTE=s3-backup
+# S3_BUCKET=
+# S3_PREFIX=
+# S3_PROVIDER=
+# S3_REGION=
+# S3_ENDPOINT=
+# S3_ACCESS_KEY_ID=
+# S3_SECRET_ACCESS_KEY=
+
+# ── n8n volume backup ───────────────────────────────────────
+# N8N_SERVICES=n8n                 # space separated
+# SKIP_SERVICES=
+
+# ── Tools ───────────────────────────────────────────────────
+# PSQL_CMD=psql
