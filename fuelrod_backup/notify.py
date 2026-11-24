@@ -21,10 +21,11 @@ import json
 import os
 import shlex
 import subprocess
-import sys
 import urllib.error
 import urllib.request
 from typing import Any
+
+from .output import warn
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  Exit codes
@@ -180,4 +181,4 @@ def _run_hook(command: str, payload: dict[str, Any], timeout: int) -> list[str]:
 def report_delivery_errors(errors: list[str], console: Any) -> None:
     """Print delivery problems as warnings; never raise."""
     for err in errors:
-        console.print(f"  [yellow]WARN:[/] notification: {err}", file=sys.stderr)
+        warn(f"notification: {err}")

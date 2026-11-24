@@ -6,8 +6,8 @@ import os
 from pathlib import Path
 from unittest.mock import MagicMock
 
-import click
 import pytest
+import typer
 
 from fuelrod_backup.config import Config, DbType
 from fuelrod_backup.restore import (
@@ -142,7 +142,7 @@ class TestNonInteractiveRestore:
         cfg = _cfg()
         cfg.base_dir = str(tmp_path)
         monkeypatch.setattr(cli_mod, "load_config", lambda *a, **k: cfg)
-        with pytest.raises((SystemExit, click.exceptions.Exit)):
+        with pytest.raises((SystemExit, typer.Exit)):
             cli_mod.restore(no_interactive=True, project="proj")
 
     def test_plan_only_without_yes(self, monkeypatch, tmp_path):
@@ -172,5 +172,25 @@ class TestNonInteractiveRestore:
         cfg = _cfg()
         cfg.base_dir = str(tmp_path)
         monkeypatch.setattr(cli_mod, "load_config", lambda *a, **k: cfg)
-        with pytest.raises((SystemExit, click.exceptions.Exit)):
+        with pytest.raises((SystemExit, typer.Exit)):
             cli_mod.restore(databases=["one", "two"])
+
+
+class TestDirectEngineDir:
+    def test_base_dir_engine_layout_is_used_without_project(self, tmp_path):
+        from fuelrod_backup.restore import _direct_engine_dir
+
+        cfg = Config(db_type=DbType.POSTGRES)
+        cfg.base_dir = str(tmp_path)
+        assert _direct_engine_dir(cfg) is None
+        (tmp_path / "postgres" / "app").mkdir(parents=True)
+        assert _direct_engine_dir(cfg) == (tmp_path / "postgres").resolve()
+
+
+def test_available_engines_lists_only_existing_folders(tmp_path):
+    from fuelrod_backup.engine_select import available_engines
+
+    (tmp_path / "mariadb").mkdir()
+    (tmp_path / "postgres").mkdir()
+    (tmp_path / "other").mkdir()
+    assert available_engines(tmp_path) == ["postgres", "mariadb"]

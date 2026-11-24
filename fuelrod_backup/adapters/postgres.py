@@ -164,6 +164,9 @@ class PostgresAdapter(DbAdapter):
     def terminate_connections(self, dbname: str) -> int:
         return self._runner.terminate_connections(dbname)
 
+    def active_connections(self, dbname: str) -> int:
+        return self._runner.active_connections(dbname)
+
     # ── PG-specific extras exposed for restore.py ──────────────────
 
     def read_toc(self, dump_file: Path) -> str:

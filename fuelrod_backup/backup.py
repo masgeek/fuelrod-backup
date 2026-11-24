@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import ExitStack
 from datetime import datetime
 from pathlib import Path
 
@@ -20,10 +21,13 @@ from rich.table import Column, Table
 from . import prompt as questionary
 from .adapters import get_adapter
 from .adapters.base import DbAdapter
+from .catalog import size_anomaly
 from .config import Config
 from .crypto import CryptoError, encrypt_file, validate_config
+from .fileutil import human_size
+from .lock import LockError, run_lock
 from .notify import EXIT_ABORTED, EXIT_FAILURE, EXIT_OK, notify, report_delivery_errors
-from .output import emit, error, json_enabled, register
+from .output import emit, error, json_enabled, register, warn
 
 console = register(Console())
 
@@ -404,7 +408,7 @@ def _backup_one(
             prune_incremental(db_dir, cfg.incremental_keep)
 
     size = dump_file.stat().st_size
-    human = f"{size / 1024 / 1024:.1f} MB" if size > 1024 * 1024 else f"{size / 1024:.1f} KB"
+    human = human_size(size)
 
     if task_id is not None:
         progress.update(task_id, description=f"[green]✓ {db}[/]  [dim]{human}[/]", completed=1)
@@ -417,6 +421,49 @@ def _backup_one(
 # ──────────────────────────────────────────────────────────────────────────────
 #  Cleanup old backups
 # ──────────────────────────────────────────────────────────────────────────────
+
+def _prune_by_profile(base_dir: str, profile: dict[str, int], protect: set[str]) -> None:
+    """Apply a GFS retention profile independently to each database folder."""
+    from .retention import select_keep
+
+    for db_dir in Path(base_dir).iterdir():
+        if not db_dir.is_dir():
+            continue
+        dumps = [f for pat in _DUMP_PATTERNS for f in db_dir.glob(pat) if f.is_file()]
+        keep = select_keep(dumps, profile)
+        for f in dumps:
+            if f not in keep and f.name not in protect:
+                f.unlink()
+                console.print(f"  [dim]Removed old backup: {f.name}[/]")
+        for manifest in db_dir.glob("manifest_*.txt"):
+            stamp = manifest.stem.removeprefix("manifest_")
+            if not any(stamp in f.name for f in dumps if f.exists()):
+                manifest.unlink()
+        if not any(db_dir.iterdir()):
+            db_dir.rmdir()
+            console.print(f"  [dim]Removed empty directory: {db_dir.name}[/]")
+
+
+def _cleanup_cfg(cfg: Config) -> None:
+    """Retention for one engine: RETENTION profile when set, else KEEP_DAYS."""
+    base = str(cfg.backup_dir)
+    protect = _protected_bases(Path(base))
+    if cfg.retention:
+        from .retention import parse_profile
+
+        try:
+            profile = parse_profile(cfg.retention)
+        except ValueError as exc:
+            warn(f"RETENTION ignored — {exc}")
+        else:
+            if profile:
+                _prune_by_profile(base, profile, protect)
+                return
+    _cleanup_old(base, cfg.days_to_keep, protect=protect)
+
+
+_DUMP_PATTERNS = ("*.dump", "*.dump.gz", "*.sql", "*.sql.gz", "*.bak", "*.age", "*.gpg", "*.zip")
+
 
 def _cleanup_old(base_dir: str, days: int, protect: set[str] | None = None) -> None:
     """
@@ -452,7 +499,20 @@ def _cleanup_old(base_dir: str, days: int, protect: set[str] | None = None) -> N
 #  Public entry point
 # ──────────────────────────────────────────────────────────────────────────────
 
-def run_backup(
+def run_backup(cfg: Config, **kwargs) -> None:
+    """Main backup workflow, serialised per engine by a run lock."""
+    from .lock import LockError, run_lock
+
+    if not cfg.base_dir:
+        _die("BASE_DIR is not set. Add it to .backup/.env config.")
+    try:
+        with run_lock(cfg.base_dir, cfg.db_type.value, "backup"):
+            _run_backup(cfg, **kwargs)
+    except LockError as exc:
+        _die(str(exc))
+
+
+def _run_backup(
         cfg: Config,
         *,
         interactive: bool = True,
@@ -531,6 +591,14 @@ def run_backup(
 
     Path(cfg.backup_dir).mkdir(parents=True, exist_ok=True)
 
+    from .hooks import HookError, run_hook
+
+    hook_ctx = {"engine": cfg.db_type.value, "backup_dir": str(cfg.backup_dir)}
+    try:
+        run_hook(cfg.hook_pre_backup, "pre_backup", hook_ctx)
+    except HookError as exc:
+        _die(f"Backup aborted: {exc}")
+
     _section("Running Backup")
 
     n = len(dbs_to_backup)
@@ -548,12 +616,17 @@ def run_backup(
                 # Use wizard-selected schemas or global CLI schemas
                 db_schemas_list = db_schemas.get(db) or schemas
                 dump_file = _backup_one(db, cfg, adapter, schemas=db_schemas_list, progress=progress, task_id=task_id)
-                dumped.append({
+                entry = {
                     "database": db,
                     "file": str(dump_file) if dump_file else None,
                     "size": dump_file.stat().st_size if dump_file else 0,
                     "status": "ok" if dump_file else "unchanged",
-                })
+                }
+                warning = size_anomaly(dump_file, cfg.size_warn_ratio) if dump_file else None
+                if warning:
+                    entry["warning"] = warning
+                    warn(warning)
+                dumped.append(entry)
             except subprocess.CalledProcessError as exc:
                 progress.update(task_id, description=f"[red]✗ {db}[/]", completed=1)
                 dumped.append({"database": db, "file": None, "size": 0,
@@ -565,7 +638,12 @@ def run_backup(
             progress.update(overall, advance=1, description=f"[bold cyan]{i}/{n} databases[/]")
 
 
-    _cleanup_old(str(cfg.backup_dir), cfg.days_to_keep, protect=_protected_bases(Path(cfg.backup_dir)))
+    _cleanup_cfg(cfg)
+
+    try:
+        run_hook(cfg.hook_post_backup, "post_backup", hook_ctx)
+    except HookError as exc:
+        warn(str(exc))
 
     if json_enabled():
         emit({
@@ -620,6 +698,7 @@ def run_parallel_backup(
             task_id,
     ) -> tuple[str, bool, str]:
         engine = cfg.db_type.value
+        lock_stack = ExitStack()
 
         def _phase(desc: str) -> None:
             progress.update(task_id, description=desc)
@@ -647,6 +726,7 @@ def run_parallel_backup(
             if not cfg.base_dir:
                 return engine, False, "BASE_DIR not set"
 
+            lock_stack.enter_context(run_lock(cfg.base_dir, engine, "backup"))
             Path(cfg.backup_dir).mkdir(parents=True, exist_ok=True)
 
             n_dbs = len(dbs_to_backup)
@@ -656,16 +736,17 @@ def run_parallel_backup(
                 _backup_one(db, cfg, adapter, schemas=schemas)
                 progress.advance(task_id)
 
-            _cleanup_old(str(cfg.backup_dir), cfg.days_to_keep)
+            _cleanup_cfg(cfg)
             return engine, True, ""
 
-            _cleanup_old(str(cfg.backup_dir), cfg.days_to_keep)
-            return engine, True, ""
-
+        except LockError as exc:
+            return engine, False, str(exc)
         except subprocess.CalledProcessError as exc:
             return engine, False, f"subprocess exit {exc.returncode}"
         except Exception as exc:
             return engine, False, str(exc)
+        finally:
+            lock_stack.close()
 
     console.print(Panel(
         f"[bold cyan]Parallel backup — {len(configs)} engine(s): "

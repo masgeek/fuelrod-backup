@@ -9,11 +9,9 @@ PostgreSQL runner.
 
 from __future__ import annotations
 
-import gzip
-import re
 import shutil
 import subprocess
-import tempfile
+import uuid
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
@@ -22,6 +20,8 @@ import psycopg
 from psycopg import sql as pgsql
 
 from .config import Config
+from .fileutil import gunzip_to_temp
+from .procenv import minimal_env
 
 
 class PgError(RuntimeError):
@@ -136,7 +136,7 @@ class PgRunner:
         """docker exec prefix for pg_dump — injects PGPASSWORD only (no PGUSER leakage risk)."""
         return [
             "docker", "exec", "-i",
-            "-e", f"PGPASSWORD={self.cfg.password}",
+            "-e", "PGPASSWORD",  # value forwarded from the docker process env, not argv
             self.cfg.service,
         ]
 
@@ -144,17 +144,14 @@ class PgRunner:
         """docker exec prefix for pg_restore — injects PGPASSWORD + PGUSER explicitly."""
         return [
             "docker", "exec", "-i",
-            "-e", f"PGPASSWORD={self.cfg.password}",
-            "-e", f"PGUSER={self.cfg.user}",
+            "-e", "PGPASSWORD",
+            "-e", "PGUSER",
             self.cfg.service,
         ]
 
     def _host_env(self) -> dict[str, str]:
-        """OS env with PGPASSWORD set, for non-Docker subprocess calls."""
-        import os
-        env = os.environ.copy()
-        env["PGPASSWORD"] = self.cfg.password
-        return env
+        """Minimal env with PGPASSWORD (and PGUSER, forwarded by docker -e) for subprocess calls."""
+        return minimal_env({"PGPASSWORD": self.cfg.password, "PGUSER": self.cfg.user})
 
     # ──────────────────────────────────────────────────────────────
     #  pg_dump / pg_restore (subprocesses — unavoidable)
@@ -164,7 +161,7 @@ class PgRunner:
         """Run pg_dump, Docker-aware. stdout is typically a file descriptor."""
         if self.cfg.use_docker:
             cmd = self._docker_dump_prefix() + [self.cfg.pg_dump_cmd] + list(args)
-            return subprocess.run(cmd, stdout=stdout, check=True)
+            return subprocess.run(cmd, stdout=stdout, env=self._host_env(), check=True)
         else:
             cmd = [self.cfg.pg_dump_cmd] + list(args)
             return subprocess.run(cmd, stdout=stdout, env=self._host_env(), check=True)
@@ -173,7 +170,7 @@ class PgRunner:
         """Run pg_restore, Docker-aware."""
         if self.cfg.use_docker:
             cmd = self._docker_restore_prefix() + [self.cfg.pg_restore_cmd] + list(args)
-            return subprocess.run(cmd, stdin=stdin, check=True)
+            return subprocess.run(cmd, stdin=stdin, env=self._host_env(), check=True)
         else:
             cmd = [self.cfg.pg_restore_cmd] + list(args)
             return subprocess.run(cmd, stdin=stdin, env=self._host_env(), check=True)
@@ -190,28 +187,29 @@ class PgRunner:
 
         try:
             if dump_file.suffix == ".gz":
-                with tempfile.NamedTemporaryFile(suffix=".dump", delete=False) as tmp_file:
-                    tmp_plain = Path(tmp_file.name)
-                with gzip.open(dump_file, "rb") as f_in, tmp_plain.open("wb") as f_out:
-                    f_out.write(f_in.read())
+                tmp_plain = gunzip_to_temp(dump_file)
                 work_file = tmp_plain
 
             if self.cfg.use_docker:
-                safe_stem = re.sub(r"[^A-Za-z0-9_.-]", "_", dump_file.stem) or "dump"
-                ctr_path = f"/tmp/pg_toc_{safe_stem}.dump"  # noqa: S108 — path is inside the container, not the host
+                ctr_path = f"/tmp/pg_toc_{uuid.uuid4().hex}.dump"  # noqa: S108 — inside the container, unique per call
                 subprocess.run(
                     ["docker", "cp", str(work_file), f"{self.cfg.service}:{ctr_path}"],
                     check=True,
+                    env=minimal_env(),
                 )
-                result = subprocess.run(
-                    ["docker", "exec", self.cfg.service, self.cfg.pg_restore_cmd, "--list", ctr_path],
-                    capture_output=True,
-                    check=True,
-                )
-                subprocess.run(
-                    ["docker", "exec", self.cfg.service, "rm", "-f", ctr_path],
-                    check=False,
-                )
+                try:
+                    result = subprocess.run(
+                        ["docker", "exec", self.cfg.service, self.cfg.pg_restore_cmd, "--list", ctr_path],
+                        capture_output=True,
+                        check=True,
+                        env=minimal_env(),
+                    )
+                finally:
+                    subprocess.run(
+                        ["docker", "exec", self.cfg.service, "rm", "-f", ctr_path],
+                        check=False,
+                        env=minimal_env(),
+                    )
                 return result.stdout.decode(errors="replace")
             else:
                 result = subprocess.run(
@@ -249,6 +247,7 @@ class PgRunner:
                 ["docker", "inspect", "--format", "{{.State.Status}}", cfg.service],
                 capture_output=True,
                 timeout=cfg.connection_timeout,
+                env=minimal_env(),
             )
             status = state.stdout.decode().strip()
             if status != "running":
@@ -262,6 +261,7 @@ class PgRunner:
                     ["docker", "exec", cfg.service, "which", binary],
                     capture_output=True,
                     timeout=cfg.connection_timeout,
+                    env=minimal_env(),
                 )
                 if chk.returncode != 0:
                     raise PgError(
@@ -329,6 +329,13 @@ class PgRunner:
         result = self._query_one(
             "SELECT COUNT(pg_terminate_backend(pid)) FROM pg_stat_activity "
             "WHERE datname = %s AND pid <> pg_backend_pid()",
+            (dbname,),
+        )
+        return int(result or 0)
+
+    def active_connections(self, dbname: str) -> int:
+        result = self._query_one(
+            "SELECT COUNT(*) FROM pg_stat_activity WHERE datname = %s AND pid <> pg_backend_pid()",
             (dbname,),
         )
         return int(result or 0)
