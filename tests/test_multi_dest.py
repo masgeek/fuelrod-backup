@@ -9,6 +9,7 @@ import pytest
 from fuelrod_backup import storage
 from fuelrod_backup.config import Config
 from fuelrod_backup.storage import parse_remote, resolve_destinations, run_sync
+from tests.conftest import patch_rclone
 
 
 class TestLocalDestinations:
@@ -68,7 +69,7 @@ def _tree(tmp_path):
 def uploads(monkeypatch):
     calls: list[str] = []
     monkeypatch.setattr(storage, "rclone_available", lambda: True)
-    monkeypatch.setattr(storage, "_run_rclone", lambda args, timeout=0: (0, "", ""))
+    patch_rclone(monkeypatch, lambda args, timeout=0: (0, "", ""))
 
     def fake_upload(base_dir, remote, args, count):
         if "FAIL" in remote:
@@ -131,7 +132,7 @@ class TestLocalTransferFlags:
         cfg = Config()
         cfg.base_dir = str(_tree(tmp_path))
         monkeypatch.setattr(storage, "rclone_available", lambda: True)
-        monkeypatch.setattr(storage, "_run_rclone", lambda args, timeout=0: (0, "", ""))
+        patch_rclone(monkeypatch, lambda args, timeout=0: (0, "", ""))
         monkeypatch.setattr(storage, "_upload", lambda b, r, args, n: seen.update(args=list(args)))
         run_sync(cfg, remote=str(tmp_path / "OneDrive"), delete_local=False, interactive=False)
         assert "--bwlimit" not in seen["args"] and "--tpslimit" not in seen["args"]

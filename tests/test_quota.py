@@ -11,6 +11,7 @@ from fuelrod_backup import quota as quota_mod
 from fuelrod_backup import storage
 from fuelrod_backup.config import Config, _load_pull
 from fuelrod_backup.quota import RemoteFile, enforce_quota, parse_size, plan_prune
+from tests.conftest import patch_rclone
 
 DAY = 86400
 NOW = time.time()
@@ -90,6 +91,10 @@ class FakeRclone:
             return 0, json.dumps(items), ""
         if args[0] == "about":
             return (0, json.dumps(self.about), "") if self.about else (1, "", "not supported")
+        if args[0] == "cat":  # the destination manifest: there is none
+            return 1, "", "object not found"
+        if args[0] == "copyto":
+            return 0, "", ""
         if args[0] == "delete":
             if self.fail_delete:
                 return 1, "", "ERROR : permission denied"
@@ -108,41 +113,41 @@ def files():
 class TestEnforce:
     def test_report_only_does_not_delete(self, files, monkeypatch):
         fake = FakeRclone(files)
-        monkeypatch.setattr(quota_mod, "_run_rclone", fake)
+        patch_rclone(monkeypatch, fake)
         rep = enforce_quota("r:b", [], quota=300, prune=False)
         assert rep.usage == 400 and rep.over and rep.percent > 100 and fake.deleted == []
 
     def test_prune_deletes_oldest_and_gets_under_quota(self, files, monkeypatch):
         fake = FakeRclone(files)
-        monkeypatch.setattr(quota_mod, "_run_rclone", fake)
+        patch_rclone(monkeypatch, fake)
         rep = enforce_quota("r:b", [], quota=300, target_pct=70, keep=1)
         assert fake.deleted == ["postgres/app/app_4.dump", "postgres/app/app_3.dump"]
         assert rep.after == 200 and rep.ok and rep.freed == 200
 
     def test_dry_run_deletes_nothing_but_reports(self, files, monkeypatch):
         fake = FakeRclone(files)
-        monkeypatch.setattr(quota_mod, "_run_rclone", fake)
+        patch_rclone(monkeypatch, fake)
         rep = enforce_quota("r:b", [], quota=300, target_pct=70, keep=1, dry_run=True)
         assert fake.deleted == [] and len(rep.deleted) == 2
 
     def test_too_small_quota_reports_still_over_instead_of_deleting_everything(self, files, monkeypatch):
         fake = FakeRclone(files)
-        monkeypatch.setattr(quota_mod, "_run_rclone", fake)
+        patch_rclone(monkeypatch, fake)
         rep = enforce_quota("r:b", [], quota=50, keep=1)
         assert "postgres/app/app_1.dump" not in fake.deleted
         assert rep.over and rep.protected == 1
 
     def test_provider_about_is_included_when_supported(self, files, monkeypatch):
-        monkeypatch.setattr(quota_mod, "_run_rclone", FakeRclone(files, about={"total": 10, "used": 4, "free": 6}))
+        patch_rclone(monkeypatch, FakeRclone(files, about={"total": 10, "used": 4, "free": 6}))
         assert enforce_quota("r:b", [], quota=10_000, prune=False).provider == {"total": 10, "used": 4, "free": 6}
 
     def test_listing_failure_raises(self, monkeypatch):
-        monkeypatch.setattr(quota_mod, "_run_rclone", lambda args, timeout=0: (1, "", "ERROR : no such remote"))
+        patch_rclone(monkeypatch, lambda args, timeout=0: (1, "", "ERROR : no such remote"))
         with pytest.raises(storage.StorageError, match="no such remote"):
             enforce_quota("nope:", [], quota=100)
 
     def test_failed_delete_raises(self, files, monkeypatch):
-        monkeypatch.setattr(quota_mod, "_run_rclone", FakeRclone(files, fail_delete=True))
+        patch_rclone(monkeypatch, FakeRclone(files, fail_delete=True))
         with pytest.raises(storage.StorageError, match="permission denied"):
             enforce_quota("r:b", [], quota=300, target_pct=70)
 
@@ -166,8 +171,9 @@ class TestConfigAndSync:
         monkeypatch.setattr(storage, "rclone_available", lambda: True)
         monkeypatch.setattr(storage, "_upload", lambda *a, **k: None)
         monkeypatch.setattr(quota_mod, "_run_rclone", fake)
+        monkeypatch.setattr("fuelrod_backup.manifest._run_rclone", fake)
         calls = []
-        real = storage._run_rclone
+        real = None
         monkeypatch.setattr(storage, "_run_rclone", lambda args, timeout=0: calls.append(args) or (0, "", ""))
         code = storage.run_sync(cfg, interactive=False, delete_local=False, remote="r:b", **kw)
         return code, fake, calls, real
@@ -211,7 +217,7 @@ class TestBackupUnits:
         assert "postgres/app/app_20260104_000000.dump" not in paths
 
     def test_report_only_run_says_over_quota_not_still_over(self, files, monkeypatch, capsys):
-        monkeypatch.setattr(quota_mod, "_run_rclone", FakeRclone(files))
+        patch_rclone(monkeypatch, FakeRclone(files))
         quota_mod.console.file = __import__("sys").stdout
         rep = enforce_quota("r:b", [], quota=300, prune=False)
         quota_mod.print_report(rep)

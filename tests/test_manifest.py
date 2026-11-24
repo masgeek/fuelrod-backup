@@ -9,11 +9,12 @@ from pathlib import Path
 
 import pytest
 
-from fuelrod_backup import manifest, pull, pullhistory, storage
+from fuelrod_backup import pull, pullhistory, storage
 from fuelrod_backup.config import Config
 from fuelrod_backup.manifest import MANIFEST_NAME, build, fingerprint, parse, read_local, scan_local, write_local
 from fuelrod_backup.pull import jobs_from_manifest
 from fuelrod_backup.quota import RemoteFile
+from tests.conftest import patch_rclone
 from tests.test_pull import FakeRemote, _cfg, _pull  # noqa: F401 — shared fake rclone fixture helpers
 
 NOW = time.time()
@@ -223,11 +224,10 @@ class TestPushPublishesTheManifest:
                 return 0, json.dumps(items), ""
             return 0, "", ""
 
-        monkeypatch.setattr(storage, "_run_rclone", run)
-        monkeypatch.setattr(manifest, "_run_rclone", run)
-        import fuelrod_backup.quota as quota_mod
+        patch_rclone(monkeypatch, run)
+        patch_rclone(monkeypatch, run)
 
-        monkeypatch.setattr(quota_mod, "_run_rclone", run)
+        patch_rclone(monkeypatch, run)
         return cfg, uploads
 
     def test_destination_manifest_is_written_after_a_push(self, tmp_path, monkeypatch):

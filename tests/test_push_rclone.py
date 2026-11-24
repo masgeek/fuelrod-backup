@@ -10,6 +10,7 @@ import pytest
 from fuelrod_backup import pull, storage
 from fuelrod_backup.config import Config, _load_pull
 from fuelrod_backup.storage import run_sync
+from tests.conftest import patch_rclone
 
 
 @pytest.fixture(autouse=True)
@@ -68,7 +69,7 @@ def _tree(tmp_path):
 def test_rclone_env_keeps_windows_system_vars_but_no_secrets(monkeypatch):
     monkeypatch.setenv("SystemRoot", "C:/Windows")
     monkeypatch.setenv("windir", "C:/Windows")
-    monkeypatch.setenv("PGPASSWORD", "leak-me")
+    monkeypatch.setenv("PGPASSWORD", "canary-" + "value")
     env = storage.rclone_env()
     assert env["SystemRoot"] == "C:/Windows" and env["windir"] == "C:/Windows"
     assert "PGPASSWORD" not in env
@@ -83,6 +84,7 @@ class TestConfiguredRemote:
 
     def test_pull_uses_pull_remote_but_remote_flag_wins(self, monkeypatch, tmp_path):
         seen = []
+        patch_rclone(monkeypatch, lambda args, timeout=0: (1, "", "object not found"))  # no manifest on the server
         monkeypatch.setattr(pull, "rclone_available", lambda: True)
         monkeypatch.setattr(pull, "discover_jobs", lambda remote_path, *a, **kw: seen.append(remote_path) or [])
         cfg = Config()
@@ -101,7 +103,7 @@ class TestConfiguredRemote:
         calls = []
         monkeypatch.setattr(storage, "rclone_available", lambda: True)
         monkeypatch.setattr(storage, "_upload", lambda base, remote, args, n: calls.append(remote))
-        monkeypatch.setattr(storage, "_run_rclone", lambda args, timeout=0: (0, "", ""))
+        patch_rclone(monkeypatch, lambda args, timeout=0: (0, "", ""))
         run_sync(cfg, interactive=False, delete_local=False)
         assert calls == ["offsite:in"]
 
@@ -116,7 +118,7 @@ class TestPushRemote:
         calls = []
         monkeypatch.setattr(storage, "rclone_available", lambda: True)
         monkeypatch.setattr(storage, "_upload", lambda base, remote, args, n: calls.append(remote))
-        monkeypatch.setattr(storage, "_run_rclone", lambda args, timeout=0: (0, "", ""))
+        patch_rclone(monkeypatch, lambda args, timeout=0: (0, "", ""))
         run_sync(cfg, interactive=False, delete_local=False, remote="s3:bucket/x")
         assert calls == ["s3:bucket/x"]
 

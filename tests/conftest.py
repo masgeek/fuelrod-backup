@@ -1,5 +1,7 @@
 """Shared pytest fixtures."""
 
+import subprocess
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -30,3 +32,36 @@ def clean_env(monkeypatch):
 def no_config_console(monkeypatch):
     """Silence the Rich console that config.py prints to stderr."""
     monkeypatch.setattr("fuelrod_backup.config._console", MagicMock())
+
+
+@pytest.fixture(autouse=True)
+def _no_real_rclone(monkeypatch):
+    """
+    Tests must never run a real rclone: CI has none, and a developer machine that does would hide tests
+    that forgot to fake it. A test that fakes ``subprocess.run`` (or a module's ``_run_rclone``) still works;
+    only a call that reaches the real process machinery fails, exactly as it would on a machine without rclone.
+    """
+    real_run, real_popen = subprocess.run, subprocess.Popen
+
+    def _check(cmd) -> None:
+        first = cmd[0] if isinstance(cmd, (list, tuple)) and cmd else cmd
+        if isinstance(first, (str, Path)) and Path(str(first)).stem.lower() == "rclone":
+            raise FileNotFoundError(2, "rclone is not available in tests", str(first))
+
+    def guarded_run(cmd, *args, **kwargs):
+        _check(cmd)
+        return real_run(cmd, *args, **kwargs)
+
+    class GuardedPopen(real_popen):
+        def __init__(self, cmd, *args, **kwargs):
+            _check(cmd)
+            super().__init__(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", guarded_run)
+    monkeypatch.setattr(subprocess, "Popen", GuardedPopen)
+
+
+def patch_rclone(monkeypatch, fake) -> None:
+    """Install *fake* as ``_run_rclone`` everywhere it is imported (storage, manifest and quota each bind it)."""
+    for module in ("storage", "manifest", "quota"):
+        monkeypatch.setattr(f"fuelrod_backup.{module}._run_rclone", fake)

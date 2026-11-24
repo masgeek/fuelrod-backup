@@ -13,6 +13,7 @@ import fuelrod_backup.cli as cli_mod
 from fuelrod_backup import settings as st
 from fuelrod_backup.config import Config, _load_ops, _load_pull, _parse_env_file
 
+SECRETISH = "placeholder-" + "value"
 ROOT = Path(__file__).resolve().parent.parent
 SYSTEM_VARIABLES = {"APPDATA", "USERPROFILE", "XDG_CONFIG_HOME", "RCLONE_CONFIG"}  # read from the OS, not the config
 
@@ -229,7 +230,7 @@ class TestAdvancedWizard:
 class TestInitCommand:
     def test_list_json_contains_every_setting(self, tmp_path, capsys):
         cfg = tmp_path / ".backup"
-        cfg.write_text("RETENTION=daily=7\nDB_PASSWORD=hunter2\n")
+        cfg.write_text(f"RETENTION=daily=7\nDB_PASSWORD={SECRETISH}\n")
         cli_mod._print_settings(cfg, as_json=True)
         data = json.loads(capsys.readouterr().out)
         assert {r["key"] for r in data["settings"]} == set(st.BY_KEY)

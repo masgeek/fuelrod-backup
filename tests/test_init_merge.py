@@ -5,10 +5,12 @@ from __future__ import annotations
 import fuelrod_backup.cli as cli_mod
 from fuelrod_backup.config import _parse_env_file
 
-EXISTING = """# my own notes
+OLD, NEW = "old-" + "value", "new-" + "value"  # placeholders, not credentials
+
+EXISTING = f"""# my own notes
 DB_TYPE=postgres
 DB_USERNAME=old_user
-DB_PASSWORD=old_pass
+DB_PASSWORD={OLD}
 DB_HOST=db.internal
 DB_PORT=5432
 
@@ -29,7 +31,7 @@ WIZARD_LINES = [
     "",
     "DB_TYPE=postgres",
     "DB_USERNAME=new_user",
-    "DB_PASSWORD=new_pass",
+    f"DB_PASSWORD={NEW}",
     "DB_HOST=db.internal",
     "DB_PORT=5432",
     "BASE_DIR=/new",
@@ -44,7 +46,7 @@ def test_wizard_values_are_updated_and_everything_else_is_preserved(tmp_path):
     cli_mod._write_config(cfg, WIZARD_LINES, updating=True)
 
     raw = _parse_env_file(cfg)
-    assert raw["DB_USERNAME"] == "new_user" and raw["DB_PASSWORD"] == "new_pass" and raw["BASE_DIR"] == "/new"
+    assert raw["DB_USERNAME"] == "new_user" and raw["DB_PASSWORD"] == NEW and raw["BASE_DIR"] == "/new"
     assert raw["KEEP_DAYS"] == "14"  # a new key is added
     for key, value in {
         "RETENTION": "daily=7,weekly=4",

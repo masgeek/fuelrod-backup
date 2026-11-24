@@ -9,6 +9,7 @@ from pathlib import Path
 from fuelrod_backup import storage
 from fuelrod_backup.config import Config, _load_pull
 from fuelrod_backup.storage import run_sync, select_latest
+from tests.conftest import patch_rclone
 
 
 def _make(db_dir: Path, name: str, age_days: float) -> Path:
@@ -91,7 +92,7 @@ class TestPushLatestUpload:
 
         monkeypatch.setattr(storage, "rclone_available", lambda: True)
         monkeypatch.setattr(storage, "_upload", fake_upload)
-        monkeypatch.setattr(storage, "_run_rclone", lambda args, timeout=0: (0, "", ""))
+        patch_rclone(monkeypatch, lambda args, timeout=0: (0, "", ""))
         return cfg, seen
 
     def test_default_uploads_only_the_latest_three(self, tmp_path, monkeypatch):

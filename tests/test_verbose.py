@@ -38,7 +38,7 @@ class TestMask:
         assert "S3CR3T" not in shown and "AKIA" not in shown and "--x=1" in shown
 
     def test_equals_form_is_hidden_too(self):
-        assert mask_args(["--pass=hunter2"]) == ["--pass=***"]
+        assert mask_args(["--pass=" + "x" * 6]) == ["--pass=***"]
 
 
 class TestRunRcloneProcess:

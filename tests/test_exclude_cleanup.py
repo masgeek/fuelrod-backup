@@ -11,6 +11,7 @@ from fuelrod_backup import pull, pullhistory, storage
 from fuelrod_backup.config import Config, _load_pull
 from fuelrod_backup.fileutil import remove_empty_dirs
 from fuelrod_backup.pull import _exclude_list
+from tests.conftest import patch_rclone
 from tests.test_manifest import _manifest_of
 from tests.test_pull import FakeRemote, _cfg, _pull
 
@@ -44,8 +45,7 @@ class TestRemoveEmptyDirs:
         cfg.base_dir = str(base)
         monkeypatch.setattr(storage, "rclone_available", lambda: True)
         monkeypatch.setattr(storage, "_upload", lambda *a, **k: None)
-        monkeypatch.setattr(storage, "_run_rclone", lambda args, timeout=0: (0, "[]", ""))
-        monkeypatch.setattr("fuelrod_backup.manifest._run_rclone", lambda args, timeout=0: (0, "[]", ""))
+        patch_rclone(monkeypatch, lambda args, timeout=0: (0, "[]", ""))
         storage.run_sync(cfg, remote="s3:b/x", interactive=False, delete_local=True)
         assert base.is_dir() and list(base.rglob("*.dump")) == []
         assert [p for p in base.iterdir() if p.is_dir()] == []  # engine/database folders are gone too
@@ -58,8 +58,7 @@ class TestRemoveEmptyDirs:
         cfg.base_dir = str(base)
         monkeypatch.setattr(storage, "rclone_available", lambda: True)
         monkeypatch.setattr(storage, "_upload", lambda *a, **k: None)
-        monkeypatch.setattr(storage, "_run_rclone", lambda args, timeout=0: (0, "[]", ""))
-        monkeypatch.setattr("fuelrod_backup.manifest._run_rclone", lambda args, timeout=0: (0, "[]", ""))
+        patch_rclone(monkeypatch, lambda args, timeout=0: (0, "[]", ""))
         storage.run_sync(cfg, remote="s3:b/x", interactive=False, delete_local=False)
         assert (base / "postgres" / "app" / "app_1.dump").exists()
 
@@ -72,10 +71,8 @@ class TestRemoveEmptyDirs:
         calls = []
         monkeypatch.setattr(storage, "rclone_available", lambda: True)
         monkeypatch.setattr(storage, "_upload", lambda *a, **k: None)
-        monkeypatch.setattr(
-            storage, "_run_rclone", lambda args, timeout=0: calls.append(args) or (0, "[]", ""),
-        )
-        monkeypatch.setattr("fuelrod_backup.manifest._run_rclone", lambda args, timeout=0: (0, "[]", ""))
+        patch_rclone(monkeypatch, lambda args, timeout=0: (0, "[]", ""))
+        monkeypatch.setattr(storage, "_run_rclone", lambda args, timeout=0: calls.append(args) or (0, "[]", ""))
         storage.run_sync(cfg, remote="s3:b/x", interactive=False, delete_local=False, age_days=30)
         prune = next(c for c in calls if c[0] == "delete")
         assert "--rmdirs" in prune
