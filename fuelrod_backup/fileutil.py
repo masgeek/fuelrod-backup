@@ -29,3 +29,25 @@ def human_size(num_bytes: int | float) -> str:
             return f"{int(size)} B" if unit == "B" else f"{size:.1f} {unit}"
         size /= 1024
     return f"{size:.1f} TB"
+
+
+def remove_empty_dirs(root: Path) -> list[Path]:
+    """
+    Delete directories under *root* that hold nothing (also ones that only held other empty folders).
+
+    *root* itself is never removed. A folder with any file in it — hidden state files included — stays.
+    Returns the removed paths, deepest first.
+    """
+    import os
+
+    removed: list[Path] = []
+    for current, _dirs, _files in os.walk(root, topdown=False):
+        path = Path(current)
+        if path == Path(root):
+            continue
+        try:
+            path.rmdir()  # only succeeds when empty
+        except OSError:
+            continue
+        removed.append(path)
+    return removed
